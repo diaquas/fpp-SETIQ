@@ -80,6 +80,65 @@ function setiq_sync_sequences($base, $key) {
         : [false, "SET:IQ rejected the sync (HTTP $code)"];
 }
 
+/**
+ * Push the SET:IQ-generated schedule into FPP's scheduler.
+ *
+ * FPP's schedule is one shared array (schedule.json), so this is a
+ * scoped sync, not a wholesale replace: every SET:IQ playlist is named
+ * "<Show> - <Night>", so entries whose playlist carries that prefix are
+ * ours to manage — they're swapped for the fresh set (which also drops
+ * stale entries for nights removed from the plan) while every other
+ * entry (background lights, etc.) is preserved untouched.
+ */
+function setiq_update_schedule($showName, $entries) {
+    list($code, $body) = setiq_get_json('http://127.0.0.1/api/schedule');
+    if ($code !== 200) return [false, "could not read the FPP schedule (HTTP $code)"];
+    $existing = json_decode($body, true);
+    if (!is_array($existing)) $existing = [];
+
+    // Same character rules as SET:IQ's playlist naming (FPP-safe names).
+    $prefix = trim(preg_replace('/[^-a-zA-Z0-9_ ]/', '', $showName)) . ' - ';
+    $kept = [];
+    $replaced = 0;
+    foreach ($existing as $e) {
+        $pl = is_array($e) ? ($e['playlist'] ?? '') : '';
+        if ($prefix !== ' - ' && $pl !== '' && strpos($pl, $prefix) === 0) {
+            $replaced++;
+            continue;
+        }
+        $kept[] = $e;
+    }
+    $merged = array_merge($kept, $entries);
+
+    $ch = curl_init('http://127.0.0.1/api/schedule');
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => json_encode($merged),
+        CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 15,
+    ]);
+    curl_exec($ch);
+    $rc = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if ($rc !== 200) return [false, "FPP rejected the schedule write (HTTP $rc)"];
+
+    // Tell fppd to re-read it. Failure is non-fatal (fppd may be down;
+    // the saved schedule loads on next start).
+    $ch = curl_init('http://127.0.0.1/api/schedule/reload');
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => '',
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 10,
+    ]);
+    curl_exec($ch);
+    curl_close($ch);
+
+    return [true, count($entries) . ' show entr' . (count($entries) === 1 ? 'y' : 'ies')
+        . " written ($replaced replaced, " . count($kept) . ' non-SET:IQ kept)'];
+}
+
 // Save the key when submitted.
 $key = file_exists($keyFile) ? trim(file_get_contents($keyFile)) : '';
 if (isset($_POST['key'])) {
@@ -91,6 +150,8 @@ $results = [];
 $showName = '';
 $error = '';
 $syncMsg = '';
+$schedMsg = '';
+$schedErr = '';
 $action = $_POST['action'] ?? '';
 if ($action === 'pull' || $action === 'sync') {
     if ($key === '') {
@@ -117,6 +178,13 @@ if ($action === 'pull' || $action === 'sync') {
             // Report what's on the box so SET:IQ can reconcile its calendar.
             list($ok, $msg) = setiq_sync_sequences($SETIQ_BASE, $key);
             $syncMsg = ($ok ? 'Sequence list synced: ' : 'Sequence sync skipped: ') . $msg;
+            // Push the season schedule into FPP's scheduler so the full
+            // show run exists, not just the playlists.
+            if (!empty($_POST['schedule']) && isset($data['schedule']) && is_array($data['schedule'])) {
+                list($sok, $smsg) = setiq_update_schedule($showName, $data['schedule']);
+                if ($sok) $schedMsg = "FPP schedule updated: $smsg.";
+                else $schedErr = "FPP schedule not updated: $smsg.";
+            }
         }
     } else { // sync only
         list($ok, $msg) = setiq_sync_sequences($SETIQ_BASE, $key);
@@ -142,6 +210,14 @@ if ($action === 'pull' || $action === 'sync') {
     <div class="alert alert-success" style="border:1px solid #c3e6cb;background:#eaf7ee;padding:10px 14px;border-radius:6px;max-width:680px"><?= htmlspecialchars($syncMsg) ?></div>
   <?php endif; ?>
 
+  <?php if ($schedMsg): ?>
+    <div class="alert alert-success" style="border:1px solid #c3e6cb;background:#eaf7ee;padding:10px 14px;border-radius:6px;max-width:680px"><?= htmlspecialchars($schedMsg) ?></div>
+  <?php endif; ?>
+
+  <?php if ($schedErr): ?>
+    <div class="alert alert-danger" style="border:1px solid #f5c6cb;background:#fdecea;padding:10px 14px;border-radius:6px;max-width:680px"><?= htmlspecialchars($schedErr) ?></div>
+  <?php endif; ?>
+
   <?php if ($results): ?>
     <div class="alert alert-info" style="border:1px solid #b8daff;background:#e7f3ff;padding:10px 14px;border-radius:6px;max-width:680px">
       <b>Pulled <?= count($results) ?> playlist(s)<?= $showName ? ' for "' . htmlspecialchars($showName) . '"' : '' ?></b>
@@ -160,6 +236,11 @@ if ($action === 'pull' || $action === 'sync') {
     <label for="setiq-key"><b>SET:IQ show key</b></label><br>
     <input type="text" id="setiq-key" name="key" value="<?= htmlspecialchars($key) ?>"
            placeholder="paste your key" style="width:100%;padding:7px 9px;margin:6px 0 12px" autocomplete="off">
+    <label style="display:block;margin:0 0 12px">
+      <input type="checkbox" name="schedule" value="1" <?= ($_SERVER['REQUEST_METHOD'] !== 'POST' || !empty($_POST['schedule'])) ? 'checked' : '' ?>>
+      Also update the FPP schedule (writes one entry per show night; your
+      non-SET:IQ schedule entries are kept)
+    </label>
     <button type="submit" class="buttons btn btn-success" name="action" value="pull">Pull from SET:IQ</button>
     <button type="submit" class="buttons btn btn-default" name="action" value="sync"
             title="Report this box's .fseq list to SET:IQ without pulling playlists">Sync sequence list only</button>
@@ -167,7 +248,8 @@ if ($action === 'pull' || $action === 'sync') {
 
   <p style="margin-top:1em"><small>Your key is stored on this FPP only
      (<code><?= htmlspecialchars($keyFile) ?></code>). Find imported playlists under
-     Content Setup &rarr; Playlists. Pull also reports this box's sequence list to
+     Content Setup &rarr; Playlists and the show run under Content Setup &rarr;
+     Scheduler. Pull also reports this box's sequence list to
      SET:IQ, so its calendar can flag songs whose .fseq isn't here yet
      (&ldquo;Sync with FPP&rdquo;).</small></p>
 </div>

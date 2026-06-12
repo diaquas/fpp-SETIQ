@@ -22,6 +22,7 @@ and the internet.
 | Feature | What it does |
 |---|---|
 | **Pull from SET:IQ** | Fetches every night's generated playlist + the season schedule straight from SET:IQ's cloud by show key and creates them locally. No download/upload dance. Manual and on-demand — nothing runs unless you click Pull. |
+| **Schedule sync** | Pull also writes the season schedule into FPP's Scheduler — one loop-until-end entry per show night (plus after-hours entries when enabled), so the full show run exists, not just the playlists. Scoped to this show's entries: anything else in your scheduler (background lights, etc.) is preserved. Optional via checkbox. |
 | **Sequence reconcile** | On every Pull (or via **Sync sequence list only**), reports the box's on-board `.fseq` list back to SET:IQ. Its calendar then locks songs that aren't on FPP yet ("not on FPP yet") and only schedules what will really play. Matching is casing/punctuation-tolerant. |
 | **Pull status** | Self-reports the box's hostname with each pull, so SET:IQ's Send-to-FPP dialog can confirm the loop closed: *"Last pulled by fpp.local today at 4:12 PM · 23 playlists in sync."* |
 | **Manual import** | Fallback for bridge-less setups: upload SET:IQ's exported `.json` playlists via FPP's File Manager, then one-click convert them into real playlists. |
@@ -98,6 +99,8 @@ its own, no database, no JavaScript framework). Everything talks `curl`:
             ▼                                       │
 ┌─ FPP local REST API (http://127.0.0.1) ────────────────────────┐
 │  POST /api/playlist/<name>     create/overwrite a playlist     │
+│  GET/POST /api/schedule        read + write the scheduler      │
+│  POST /api/schedule/reload     make fppd re-read the schedule  │
 │  GET  /api/files/Sequences     list on-board .fseq files       │
 │  GET  /api/files/Uploads       list File Manager uploads       │
 │  GET  /api/system/status       what's playing now              │
