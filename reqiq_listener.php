@@ -123,6 +123,18 @@ function rq_find_index($FPP, $playlistName, $sequence) {
 }
 
 /** Report the on-box .fseq list (keeps SET:IQ reconcile + matching fresh). */
+/** Seconds for one sequence from FPP's meta endpoint, or null. */
+function rq_sequence_duration($FPP, $name) {
+    list($code, $meta) = rq_get_json(
+        "$FPP/api/sequence/" . rawurlencode($name) . "/meta"
+    );
+    if ($code !== 200 || !is_array($meta)) return null;
+    $frames = isset($meta['NumFrames']) ? (int) $meta['NumFrames'] : 0;
+    $step   = isset($meta['StepTime'])  ? (int) $meta['StepTime']  : 0; // ms/frame
+    if ($frames <= 0 || $step <= 0) return null;
+    return (int) round($frames * $step / 1000);
+}
+
 function rq_sync_sequences($CLOUD, $FPP, $key) {
     list($code, $data) = rq_get_json("$FPP/api/files/Sequences");
     if ($code !== 200 || !is_array($data)) return;
@@ -132,7 +144,22 @@ function rq_sync_sequences($CLOUD, $FPP, $key) {
         $name = is_array($f) ? ($f['name'] ?? '') : (is_string($f) ? $f : '');
         if ($name !== '' && preg_match('/\.fseq$/i', $name)) $names[] = $name;
     }
-    rq_post_json("$CLOUD/api/setiq/fpp/sync", ['key' => $key, 'sequences' => $names]);
+    // Durations let the cloud seed catalog rows with real lengths
+    // (REQ:IQ-standalone mode). All-local reads, so the loop is cheap;
+    // cached across syncs since sequence lengths don't change.
+    static $durCache = [];
+    $durations = [];
+    foreach ($names as $name) {
+        if (!array_key_exists($name, $durCache)) {
+            $durCache[$name] = rq_sequence_duration($FPP, $name);
+        }
+        if ($durCache[$name] !== null) $durations[$name] = $durCache[$name];
+    }
+    rq_post_json("$CLOUD/api/setiq/fpp/sync", [
+        'key'       => $key,
+        'sequences' => $names,
+        'durations' => (object) $durations,
+    ]);
 }
 
 // ── Singleton guard ───────────────────────────────────────────────────
