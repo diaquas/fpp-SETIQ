@@ -82,7 +82,9 @@ its own, no database, no JavaScript framework). Everything talks `curl`:
 ┌─ lightsofelmridge.com (HTTPS, key-scoped) ─────────────────────┐
 │  GET  /api/setiq/fpp/playlists?key=…   playlists + schedule    │
 │  POST /api/setiq/fpp/sync              {key, sequences[]}      │
-│  POST /api/reqiq/fpp/heartbeat         now playing / directives│
+│  POST /api/reqiq/fpp/heartbeat         now playing → directives│
+│  GET  /api/reqiq/fpp/playlist          requestable catalog     │
+│  POST /api/reqiq/fpp/mark              confirm request played  │
 └────────────────────────────────────────────────────────────────┘
             ▲ fetch / report                       │
             │                                      ▼
@@ -98,8 +100,8 @@ its own, no database, no JavaScript framework). Everything talks `curl`:
 │  POST /api/playlist/<name>     create/overwrite a playlist     │
 │  GET  /api/files/Sequences     list on-board .fseq files       │
 │  GET  /api/files/Uploads       list File Manager uploads       │
-│  GET  /api/fppd/status         what's playing now              │
-│  POST /api/command             insert-playlist commands        │
+│  GET  /api/system/status       what's playing now              │
+│  GET  /api/command/<insert…>   insert-playlist commands        │
 └────────────────────────────────────────────────────────────────┘
 ```
 
