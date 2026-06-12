@@ -41,6 +41,45 @@ function setiq_post_playlist($name, $body) {
     return $code;
 }
 
+/** The .fseq files actually on this box (FPP file API). */
+function setiq_local_sequences() {
+    list($code, $body) = setiq_get_json('http://127.0.0.1/api/files/Sequences');
+    if ($code !== 200) return null;
+    $data = json_decode($body, true);
+    if (!is_array($data)) return null;
+    $files = isset($data['files']) && is_array($data['files']) ? $data['files'] : $data;
+    $names = [];
+    foreach ($files as $f) {
+        $name = is_array($f) ? ($f['name'] ?? '') : (is_string($f) ? $f : '');
+        if ($name !== '' && preg_match('/\.fseq$/i', $name)) $names[] = $name;
+    }
+    return $names;
+}
+
+/**
+ * Report the on-box sequence list to SET:IQ so its calendar can lock
+ * songs that aren't here yet ("Sync with FPP" reconcile).
+ */
+function setiq_sync_sequences($base, $key) {
+    $names = setiq_local_sequences();
+    if ($names === null) return [false, 'could not read the local sequence list'];
+    $payload = json_encode(['key' => $key, 'sequences' => $names]);
+    $ch = curl_init("$base/api/setiq/fpp/sync");
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $payload,
+        CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 30,
+    ]);
+    curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return $code === 200
+        ? [true, count($names) . ' sequence(s) reported to SET:IQ']
+        : [false, "SET:IQ rejected the sync (HTTP $code)"];
+}
+
 // Save the key when submitted.
 $key = file_exists($keyFile) ? trim(file_get_contents($keyFile)) : '';
 if (isset($_POST['key'])) {
@@ -51,10 +90,12 @@ if (isset($_POST['key'])) {
 $results = [];
 $showName = '';
 $error = '';
-if (($_POST['action'] ?? '') === 'pull') {
+$syncMsg = '';
+$action = $_POST['action'] ?? '';
+if ($action === 'pull' || $action === 'sync') {
     if ($key === '') {
         $error = 'Enter your SET:IQ show key first.';
-    } else {
+    } elseif ($action === 'pull') {
         list($code, $body) = setiq_get_json("$SETIQ_BASE/api/setiq/fpp/playlists?key=" . rawurlencode($key));
         $data = json_decode($body, true);
         if ($code !== 200 || !is_array($data) || !isset($data['playlists'])) {
@@ -68,6 +109,16 @@ if (($_POST['action'] ?? '') === 'pull') {
                 $rc = setiq_post_playlist($name, $json);
                 $results[] = [$name, $rc === 200 ? 'imported' : "FAILED (HTTP $rc)"];
             }
+            // Report what's on the box so SET:IQ can reconcile its calendar.
+            list($ok, $msg) = setiq_sync_sequences($SETIQ_BASE, $key);
+            $syncMsg = ($ok ? 'Sequence list synced: ' : 'Sequence sync skipped: ') . $msg;
+        }
+    } else { // sync only
+        list($ok, $msg) = setiq_sync_sequences($SETIQ_BASE, $key);
+        if ($ok) {
+            $syncMsg = "Sequence list synced: $msg. Open SET:IQ and click \"Sync with FPP\".";
+        } else {
+            $error = "Sequence sync failed: $msg.";
         }
     }
 }
@@ -80,6 +131,10 @@ if (($_POST['action'] ?? '') === 'pull') {
 
   <?php if ($error): ?>
     <div class="alert alert-danger" style="border:1px solid #f5c6cb;background:#fdecea;padding:10px 14px;border-radius:6px;max-width:680px"><?= htmlspecialchars($error) ?></div>
+  <?php endif; ?>
+
+  <?php if ($syncMsg): ?>
+    <div class="alert alert-success" style="border:1px solid #c3e6cb;background:#eaf7ee;padding:10px 14px;border-radius:6px;max-width:680px"><?= htmlspecialchars($syncMsg) ?></div>
   <?php endif; ?>
 
   <?php if ($results): ?>
@@ -100,11 +155,14 @@ if (($_POST['action'] ?? '') === 'pull') {
     <label for="setiq-key"><b>SET:IQ show key</b></label><br>
     <input type="text" id="setiq-key" name="key" value="<?= htmlspecialchars($key) ?>"
            placeholder="paste your key" style="width:100%;padding:7px 9px;margin:6px 0 12px" autocomplete="off">
-    <input type="hidden" name="action" value="pull">
-    <button type="submit" class="buttons btn btn-success">Pull from SET:IQ</button>
+    <button type="submit" class="buttons btn btn-success" name="action" value="pull">Pull from SET:IQ</button>
+    <button type="submit" class="buttons btn btn-default" name="action" value="sync"
+            title="Report this box's .fseq list to SET:IQ without pulling playlists">Sync sequence list only</button>
   </form>
 
   <p style="margin-top:1em"><small>Your key is stored on this FPP only
      (<code><?= htmlspecialchars($keyFile) ?></code>). Find imported playlists under
-     Content Setup &rarr; Playlists.</small></p>
+     Content Setup &rarr; Playlists. Pull also reports this box's sequence list to
+     SET:IQ, so its calendar can flag songs whose .fseq isn't here yet
+     (&ldquo;Sync with FPP&rdquo;).</small></p>
 </div>
