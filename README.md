@@ -1,11 +1,16 @@
-# fpp-SETIQ — SET:IQ Playlist Importer
+# fpp-SETIQ — SET:IQ + REQ:IQ for FPP
 
 A [Falcon Player (FPP)](https://github.com/FalconChristmas/fpp) plugin that connects
-your show player to [SET:IQ](https://lightsofelmridge.com), the free season-setlist
-curator from the IQ Suite. SET:IQ builds a unique, runtime-targeted playlist for
-every night of your season; this plugin gets those playlists **onto the box in one
-click** — and reports back what's actually on the box so the calendar never
-schedules a sequence you don't have.
+your show player to the **IQ Suite** from
+[Lights of Elm Ridge](https://lightsofelmridge.com):
+
+- **SET:IQ** (season setlists) — SET:IQ builds a unique, runtime-targeted playlist
+  for every night of your season; the plugin gets those playlists **onto the box in
+  one click** and reports back what's actually on the box, so the calendar never
+  schedules a sequence you don't have.
+- **REQ:IQ** (viewer requests) — a background listener reports what's playing to
+  your REQ:IQ viewer page in real time and inserts viewer-requested songs into
+  playback.
 
 It runs entirely **on the FPP host**, which is the whole trick: a cloud web app
 can't reach a LAN-only, HTTP-only FPP (CORS, mixed-content, Private Network
@@ -20,7 +25,9 @@ and the internet.
 | **Sequence reconcile** | On every Pull (or via **Sync sequence list only**), reports the box's on-board `.fseq` list back to SET:IQ. Its calendar then locks songs that aren't on FPP yet ("not on FPP yet") and only schedules what will really play. Matching is casing/punctuation-tolerant. |
 | **Pull status** | Self-reports the box's hostname with each pull, so SET:IQ's Send-to-FPP dialog can confirm the loop closed: *"Last pulled by fpp.local today at 4:12 PM · 23 playlists in sync."* |
 | **Manual import** | Fallback for bridge-less setups: upload SET:IQ's exported `.json` playlists via FPP's File Manager, then one-click convert them into real playlists. |
-| **Idempotent** | Re-running either path overwrites same-named playlists cleanly — re-pull whenever you change the season. |
+| **Live "now playing"** | While REQ:IQ is enabled, a lightweight listener (~5 s loop, started with fppd) heartbeats playback status to the cloud — your viewer page shows what's playing, live/offline, in real time. |
+| **Viewer requests** | The listener maintains a **REQIQ Requests** playlist from your catalog (only songs whose `.fseq` exists on the box) and executes request directives via FPP's `Insert Playlist After Current` / `Insert Playlist Immediate`, confirming back so the queue advances pending → playing → played. |
+| **Idempotent** | Re-running either import path overwrites same-named playlists cleanly — re-pull whenever you change the season. |
 
 ## Install
 
@@ -32,10 +39,11 @@ https://raw.githubusercontent.com/diaquas/fpp-SETIQ/main/pluginInfo.json
 ```
 
 **Requirements:** FPP 8.x or newer (verified against 9.5.1), internet access from
-the FPP for the Pull/Sync features. `php-curl` ships with FPP — nothing to build,
-no daemon, no FPPD restart.
+the FPP for the Pull/Sync/REQ:IQ features. `php-curl` ships with FPP — nothing to
+build. The REQ:IQ listener hooks fppd start/stop; the SET:IQ pages need no restart
+at all.
 
-## Use
+## SET:IQ — playlists
 
 ### One-click — Pull from SET:IQ (recommended)
 
@@ -54,55 +62,75 @@ playlists (e.g. right after copying new `.fseq` files to the box).
 3. FPP → **Content Setup → SET:IQ - Import Playlists** → **Import**.
 4. Playlists appear under **Content Setup → Playlists**.
 
+## REQ:IQ — viewer requests
+
+1. Set your show key on the **Pull from SET:IQ** page (one key serves both tools).
+2. FPP → **Content Setup → REQ:IQ - Viewer Requests** → **Enable REQ:IQ**.
+3. Done. Viewers on your REQ:IQ page see what's playing live and can request
+   songs; requests are inserted right after the current song.
+
+Disable any time from the same page — the listener stops and nothing phones home.
+
 ## How it works
 
-The plugin is two PHP pages rendered inside the FPP UI (registered via
-`menu.inc` under **Content Setup**) — no background service, no schema, no
-JavaScript framework. Everything happens server-side on the box via `curl`:
+Three PHP pages rendered inside the FPP UI (registered via `menu.inc` under
+**Content Setup**) plus an optional background listener for REQ:IQ (a PHP loop
+started/stopped with fppd via the `postStart`/`postStop` hooks — no daemon of
+its own, no database, no JavaScript framework). Everything talks `curl`:
 
 ```
-┌─ SET:IQ cloud (HTTPS) ─────────────────────────────────────────┐
+┌─ lightsofelmridge.com (HTTPS, key-scoped) ─────────────────────┐
 │  GET  /api/setiq/fpp/playlists?key=…   playlists + schedule    │
 │  POST /api/setiq/fpp/sync              {key, sequences[]}      │
+│  POST /api/reqiq/fpp/heartbeat         now playing / directives│
 └────────────────────────────────────────────────────────────────┘
             ▲ fetch / report                       │
             │                                      ▼
 ┌─ this plugin (PHP on the FPP host) ────────────────────────────┐
-│  pull.php     Pull + sequence sync, key storage                │
-│  content.php  import uploaded .json files                      │
+│  pull.php            Pull + sequence sync, key storage         │
+│  content.php         import uploaded .json files               │
+│  reqiq.php           enable/disable viewer requests            │
+│  reqiq_listener.php  ~5 s loop: heartbeat + request inserts    │
 └────────────────────────────────────────────────────────────────┘
-            │ create / read                        ▲
-            ▼                                      │
+            │ create / read / insert                ▲
+            ▼                                       │
 ┌─ FPP local REST API (http://127.0.0.1) ────────────────────────┐
 │  POST /api/playlist/<name>     create/overwrite a playlist     │
 │  GET  /api/files/Sequences     list on-board .fseq files       │
 │  GET  /api/files/Uploads       list File Manager uploads       │
+│  GET  /api/fppd/status         what's playing now              │
+│  POST /api/command             insert-playlist commands        │
 └────────────────────────────────────────────────────────────────┘
 ```
 
-**Trust model.** The show key is a per-show bearer secret minted by SET:IQ. It's
-stored **only on this box** (`config/fpp-SETIQ.key` under FPP's config
-directory) and sent only to `lightsofelmridge.com` over HTTPS. Cloud-side, the
-key scopes every read and write to exactly one show — an invalid key fetches
-nothing and writes nothing. Treat it like a password; SET:IQ can regenerate it
-at any time (the old key dies immediately).
+**Trust model.** The show key is a per-show bearer secret minted by SET:IQ and
+shared by both tools. It's stored **only on this box** (`config/fpp-SETIQ.key`
+under FPP's media directory) and sent only to `lightsofelmridge.com` over
+HTTPS. Cloud-side, the key scopes every read and write to exactly one show —
+an invalid key fetches nothing and writes nothing. Treat it like a password;
+SET:IQ can regenerate it at any time (the old key dies immediately).
 
-**What leaves the box.** Two things only: the show key you pasted, and the list
-of `.fseq` filenames (for reconcile, plus the hostname for the status line). No
-media, no sequence data, no credentials.
+**What leaves the box.** The show key, the list of `.fseq` filenames (for
+reconcile), the hostname (for the pull-status line), and — only while REQ:IQ is
+enabled — playback status (current song, live/offline). No media, no sequence
+data, no credentials.
 
 ### Repo layout
 
 ```
-pluginInfo.json          FPP Plugin Manager manifest (install/update source)
-menu.inc                 menu entries under Content Setup
-pull.php                 "Pull from SET:IQ" — fetch by key, create locally, sync sequences
-content.php              "Import Playlists" — convert uploaded .json files
-scripts/fpp_install.sh   install hook (nothing to build)
-scripts/fpp_uninstall.sh uninstall hook
+pluginInfo.json           FPP Plugin Manager manifest (install/update source)
+menu.inc                  menu entries under Content Setup
+pull.php                  "Pull from SET:IQ" — fetch by key, create locally, sync sequences
+content.php               "Import Playlists" — convert uploaded .json files
+reqiq.php                 "REQ:IQ - Viewer Requests" — enable/disable the listener
+reqiq_listener.php        the ~5 s heartbeat/request loop (runs only when enabled)
+scripts/fpp_install.sh    install hook (nothing to build)
+scripts/fpp_uninstall.sh  uninstall hook
+scripts/postStart.sh      starts the REQ:IQ listener with fppd (when enabled)
+scripts/postStop.sh       stops it with fppd
 ```
 
-The canonical source lives in the
+The SET:IQ pages' canonical source lives in the
 [Lights-of-Elm-Ridge monorepo](https://github.com/diaquas/Lights-of-Elm-Ridge)
 under `fpp-plugin/fpp-SETIQ/` and is mirrored here; FPP's Plugin Manager
 installs and updates from this repo's `main`.
@@ -118,16 +146,20 @@ installs and updates from this repo's `main`.
   differs from the sequence name (SET:IQ currently assumes `Song.fseq` ↔
   `Song.mp3`). Remap the media on the playlist entry; exact media names from the
   FSEQ header are on the roadmap.
+- **Viewer page shows offline while the show is running** — REQ:IQ is disabled,
+  or the listener didn't start: toggle it off/on from the REQ:IQ page, and check
+  that fppd restarted since install.
 - **Updating the plugin** — Plugin Manager → fpp-SETIQ → Update (pulls this
   repo's `main`).
 
 ## Roadmap
 
 - **Exact media names** from the FSEQ `mf` header tag (kills the `Invalid mediaName` remaps).
-- **Scheduled auto-pull** — opt-in nightly pull so season edits land without touching the box.
+- **Scheduled auto-pull** — opt-in nightly playlist refresh from SET:IQ's cloud
+  (the REQ:IQ listener already refreshes the requests playlist automatically).
 
 ---
 
 Part of the **IQ Suite** by [Lights of Elm Ridge](https://lightsofelmridge.com) —
-SET:IQ (season setlists) · MAP:IQ (sequence mapping) · TRK:IQ (audio analysis) ·
-REQ:IQ (song requests).
+SET:IQ (season setlists) · REQ:IQ (song requests) · MAP:IQ (sequence mapping) ·
+TRK:IQ (audio analysis).
