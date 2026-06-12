@@ -123,16 +123,49 @@ function rq_find_index($FPP, $playlistName, $sequence) {
 }
 
 /** Report the on-box .fseq list (keeps SET:IQ reconcile + matching fresh). */
-/** Seconds for one sequence from FPP's meta endpoint, or null. */
-function rq_sequence_duration($FPP, $name) {
+/** Duration (seconds) + media filename for one sequence, from FPP's
+ *  meta endpoint. xLights writes the audio path into the fseq header
+ *  (variableHeaders.mf), which is how we chain through to ID3 tags. */
+function rq_sequence_info($FPP, $name) {
     list($code, $meta) = rq_get_json(
         "$FPP/api/sequence/" . rawurlencode($name) . "/meta"
     );
-    if ($code !== 200 || !is_array($meta)) return null;
+    if ($code !== 200 || !is_array($meta)) return ['duration' => null, 'media' => null];
     $frames = isset($meta['NumFrames']) ? (int) $meta['NumFrames'] : 0;
     $step   = isset($meta['StepTime'])  ? (int) $meta['StepTime']  : 0; // ms/frame
-    if ($frames <= 0 || $step <= 0) return null;
-    return (int) round($frames * $step / 1000);
+    $duration = ($frames > 0 && $step > 0) ? (int) round($frames * $step / 1000) : null;
+
+    $mf = $meta['variableHeaders']['mf'] ?? '';
+    $media = null;
+    if (is_string($mf) && $mf !== '') {
+        $base = basename(str_replace('\\', '/', $mf));
+        if ($base !== '') $media = $base;
+    }
+    return ['duration' => $duration, 'media' => $media];
+}
+
+/** ID3-ish tags (title/artist/album) for a media file via FPP. */
+function rq_media_id3($FPP, $mediaName) {
+    list($code, $meta) = rq_get_json(
+        "$FPP/api/media/" . rawurlencode($mediaName) . "/meta"
+    );
+    if ($code !== 200 || !is_array($meta)) return null;
+    $tags = $meta['format']['tags'] ?? null;
+    if (!is_array($tags)) return null;
+    $get = function ($want) use ($tags) {
+        foreach ($tags as $k => $v) {
+            if (strtolower($k) === $want && is_string($v) && trim($v) !== '') {
+                return trim($v);
+            }
+        }
+        return null;
+    };
+    $out = [];
+    foreach (['title', 'artist', 'album'] as $f) {
+        $v = $get($f);
+        if ($v !== null) $out[$f] = $v;
+    }
+    return $out !== [] ? $out : null;
 }
 
 function rq_sync_sequences($CLOUD, $FPP, $key) {
@@ -144,21 +177,33 @@ function rq_sync_sequences($CLOUD, $FPP, $key) {
         $name = is_array($f) ? ($f['name'] ?? '') : (is_string($f) ? $f : '');
         if ($name !== '' && preg_match('/\.fseq$/i', $name)) $names[] = $name;
     }
-    // Durations let the cloud seed catalog rows with real lengths
-    // (REQ:IQ-standalone mode). All-local reads, so the loop is cheap;
-    // cached across syncs since sequence lengths don't change.
-    static $durCache = [];
+    // Durations + ID3 tags let the cloud seed catalog rows with real
+    // lengths, titles and artists (REQ:IQ-standalone mode). All-local
+    // reads, cached across syncs — fseq headers and ID3 don't change.
+    static $infoCache = [];
+    static $id3Cache  = [];
     $durations = [];
+    $id3       = [];
     foreach ($names as $name) {
-        if (!array_key_exists($name, $durCache)) {
-            $durCache[$name] = rq_sequence_duration($FPP, $name);
+        if (!array_key_exists($name, $infoCache)) {
+            $infoCache[$name] = rq_sequence_info($FPP, $name);
         }
-        if ($durCache[$name] !== null) $durations[$name] = $durCache[$name];
+        $info = $infoCache[$name];
+        if ($info['duration'] !== null) $durations[$name] = $info['duration'];
+        if ($info['media'] !== null) {
+            if (!array_key_exists($info['media'], $id3Cache)) {
+                $id3Cache[$info['media']] = rq_media_id3($FPP, $info['media']);
+            }
+            if ($id3Cache[$info['media']] !== null) {
+                $id3[$name] = $id3Cache[$info['media']];
+            }
+        }
     }
     rq_post_json("$CLOUD/api/setiq/fpp/sync", [
         'key'       => $key,
         'sequences' => $names,
         'durations' => (object) $durations,
+        'id3'       => (object) $id3,
     ]);
 }
 

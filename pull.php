@@ -56,38 +56,76 @@ function setiq_local_sequences() {
     return $names;
 }
 
-/** Seconds for one sequence from FPP's meta endpoint, or null. */
-function setiq_sequence_duration($name) {
+/** Duration (seconds) + media filename for one sequence. xLights
+ *  writes the audio path into the fseq header (variableHeaders.mf). */
+function setiq_sequence_info($name) {
     list($code, $body) = setiq_get_json(
         'http://127.0.0.1/api/sequence/' . rawurlencode($name) . '/meta'
     );
-    if ($code !== 200) return null;
+    if ($code !== 200) return ['duration' => null, 'media' => null];
     $meta = json_decode($body, true);
-    if (!is_array($meta)) return null;
+    if (!is_array($meta)) return ['duration' => null, 'media' => null];
     $frames = isset($meta['NumFrames']) ? (int) $meta['NumFrames'] : 0;
     $step   = isset($meta['StepTime'])  ? (int) $meta['StepTime']  : 0; // ms/frame
-    if ($frames <= 0 || $step <= 0) return null;
-    return (int) round($frames * $step / 1000);
+    $duration = ($frames > 0 && $step > 0) ? (int) round($frames * $step / 1000) : null;
+    $mf = $meta['variableHeaders']['mf'] ?? '';
+    $media = null;
+    if (is_string($mf) && $mf !== '') {
+        $base = basename(str_replace('\\', '/', $mf));
+        if ($base !== '') $media = $base;
+    }
+    return ['duration' => $duration, 'media' => $media];
+}
+
+/** ID3-ish tags (title/artist/album) for a media file via FPP. */
+function setiq_media_id3($mediaName) {
+    list($code, $body) = setiq_get_json(
+        'http://127.0.0.1/api/media/' . rawurlencode($mediaName) . '/meta'
+    );
+    if ($code !== 200) return null;
+    $meta = json_decode($body, true);
+    $tags = is_array($meta) ? ($meta['format']['tags'] ?? null) : null;
+    if (!is_array($tags)) return null;
+    $get = function ($want) use ($tags) {
+        foreach ($tags as $k => $v) {
+            if (strtolower($k) === $want && is_string($v) && trim($v) !== '') {
+                return trim($v);
+            }
+        }
+        return null;
+    };
+    $out = [];
+    foreach (['title', 'artist', 'album'] as $f) {
+        $v = $get($f);
+        if ($v !== null) $out[$f] = $v;
+    }
+    return $out !== [] ? $out : null;
 }
 
 /**
  * Report the on-box sequence list to SET:IQ so its calendar can lock
  * songs that aren't here yet ("Sync with FPP" reconcile). Durations
- * ride along so the cloud can seed REQ:IQ catalog rows with real
- * lengths (standalone mode).
+ * and ID3 tags ride along so the cloud can seed REQ:IQ catalog rows
+ * with real lengths, titles and artists (standalone mode).
  */
 function setiq_sync_sequences($base, $key) {
     $names = setiq_local_sequences();
     if ($names === null) return [false, 'could not read the local sequence list'];
     $durations = [];
+    $id3       = [];
     foreach ($names as $name) {
-        $d = setiq_sequence_duration($name);
-        if ($d !== null) $durations[$name] = $d;
+        $info = setiq_sequence_info($name);
+        if ($info['duration'] !== null) $durations[$name] = $info['duration'];
+        if ($info['media'] !== null) {
+            $tags = setiq_media_id3($info['media']);
+            if ($tags !== null) $id3[$name] = $tags;
+        }
     }
     $payload = json_encode([
         'key'       => $key,
         'sequences' => $names,
         'durations' => (object) $durations,
+        'id3'       => (object) $id3,
     ]);
     $ch = curl_init("$base/api/setiq/fpp/sync");
     curl_setopt_array($ch, [
