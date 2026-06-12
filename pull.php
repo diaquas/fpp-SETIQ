@@ -13,12 +13,12 @@ $keyFile = "$cfgDir/$pluginName.key";
 
 $SETIQ_BASE = 'https://lightsofelmridge.com';
 
-function setiq_get_json($url) {
+function setiq_get_json($url, $extraHeaders = []) {
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT        => 30,
-        CURLOPT_HTTPHEADER     => ['Accept: application/json'],
+        CURLOPT_HTTPHEADER     => array_merge(['Accept: application/json'], $extraHeaders),
     ]);
     $body = curl_exec($ch);
     $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -96,7 +96,12 @@ if ($action === 'pull' || $action === 'sync') {
     if ($key === '') {
         $error = 'Enter your SET:IQ show key first.';
     } elseif ($action === 'pull') {
-        list($code, $body) = setiq_get_json("$SETIQ_BASE/api/setiq/fpp/playlists?key=" . rawurlencode($key));
+        // Self-report the hostname so SET:IQ's dialog can show
+        // "last pulled by <host>".
+        list($code, $body) = setiq_get_json(
+            "$SETIQ_BASE/api/setiq/fpp/playlists?key=" . rawurlencode($key),
+            ['X-FPP-Host: ' . php_uname('n')]
+        );
         $data = json_decode($body, true);
         if ($code !== 200 || !is_array($data) || !isset($data['playlists'])) {
             $error = "Couldn't reach SET:IQ or the key is invalid (HTTP $code).";
