@@ -9,12 +9,6 @@ $menuEntries = Array(
         'wrap' => 1
     ),
     Array(
-        'text' => 'SET:IQ - Import Playlists',
-        'type' => 'content',
-        'page' => 'content.php',
-        'wrap' => 1
-    ),
-    Array(
         'text' => 'SET:IQ - Manage Playlists',
         'type' => 'content',
         'page' => 'manage.php',
