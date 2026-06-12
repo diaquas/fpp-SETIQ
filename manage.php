@@ -180,11 +180,11 @@ if ($rows === null && $error === '') $error = $scanErr;
      schedule entries are cleaned up too. Re-pulling recreates everything.</p>
 
   <?php if ($error): ?>
-    <div class="alert alert-danger" style="border:1px solid #f5c6cb;background:#fdecea;padding:10px 14px;border-radius:6px;max-width:720px"><?= htmlspecialchars($error) ?></div>
+    <div class="alert alert-danger" style="border:1px solid rgba(127,127,127,.4);background:rgba(127,127,127,.12);padding:10px 14px;border-radius:6px;max-width:720px"><?= htmlspecialchars($error) ?></div>
   <?php endif; ?>
 
   <?php if ($notice): ?>
-    <div class="alert alert-success" style="border:1px solid #c3e6cb;background:#eaf7ee;padding:10px 14px;border-radius:6px;max-width:720px"><?= htmlspecialchars($notice) ?></div>
+    <div class="alert alert-success" style="border:1px solid rgba(127,127,127,.4);background:rgba(127,127,127,.12);padding:10px 14px;border-radius:6px;max-width:720px"><?= htmlspecialchars($notice) ?></div>
   <?php endif; ?>
 
   <?php if ($results): ?>

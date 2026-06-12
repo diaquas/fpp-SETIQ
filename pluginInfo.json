@@ -2,7 +2,7 @@
   "repoName": "fpp-SETIQ",
   "name": "SET:IQ + REQ:IQ",
   "author": "Lights of Elm Ridge",
-  "description": "Lights of Elm Ridge IQ tools for FPP. SET:IQ: pull cloud-generated playlists straight onto the box (or import uploaded JSON) with one click. REQ:IQ: background listener that lets viewers see what's playing and request songs from their phones — requests are inserted into playback automatically. Runs entirely on the FPP host, so no CORS / mixed-content / Private-Network-Access issues apply.",
+  "description": "SET:IQ + REQ:IQ companion for FPP: pulls SET:IQ playlists and schedules straight from the cloud with your show key, and runs the REQ:IQ listener (now playing, Up Next, viewer requests). Runs entirely on the FPP host.",
   "homeURL": "https://github.com/diaquas/fpp-SETIQ",
   "srcURL": "https://github.com/diaquas/fpp-SETIQ.git",
   "bugURL": "https://github.com/diaquas/fpp-SETIQ/issues",

@@ -335,23 +335,23 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync'], true)) {
      you change the season in SET:IQ.</p>
 
   <?php if ($error): ?>
-    <div class="alert alert-danger" style="border:1px solid #f5c6cb;background:#fdecea;padding:10px 14px;border-radius:6px;max-width:680px"><?= htmlspecialchars($error) ?></div>
+    <div class="alert alert-danger" style="border:1px solid rgba(127,127,127,.4);background:rgba(127,127,127,.12);padding:10px 14px;border-radius:6px;max-width:680px"><?= htmlspecialchars($error) ?></div>
   <?php endif; ?>
 
   <?php if ($syncMsg): ?>
-    <div class="alert alert-success" style="border:1px solid #c3e6cb;background:#eaf7ee;padding:10px 14px;border-radius:6px;max-width:680px"><?= htmlspecialchars($syncMsg) ?></div>
+    <div class="alert alert-success" style="border:1px solid rgba(127,127,127,.4);background:rgba(127,127,127,.12);padding:10px 14px;border-radius:6px;max-width:680px"><?= htmlspecialchars($syncMsg) ?></div>
   <?php endif; ?>
 
   <?php if ($schedMsg): ?>
-    <div class="alert alert-success" style="border:1px solid #c3e6cb;background:#eaf7ee;padding:10px 14px;border-radius:6px;max-width:680px"><?= htmlspecialchars($schedMsg) ?></div>
+    <div class="alert alert-success" style="border:1px solid rgba(127,127,127,.4);background:rgba(127,127,127,.12);padding:10px 14px;border-radius:6px;max-width:680px"><?= htmlspecialchars($schedMsg) ?></div>
   <?php endif; ?>
 
   <?php if ($schedErr): ?>
-    <div class="alert alert-danger" style="border:1px solid #f5c6cb;background:#fdecea;padding:10px 14px;border-radius:6px;max-width:680px"><?= htmlspecialchars($schedErr) ?></div>
+    <div class="alert alert-danger" style="border:1px solid rgba(127,127,127,.4);background:rgba(127,127,127,.12);padding:10px 14px;border-radius:6px;max-width:680px"><?= htmlspecialchars($schedErr) ?></div>
   <?php endif; ?>
 
   <?php if ($results): ?>
-    <div class="alert alert-info" style="border:1px solid #b8daff;background:#e7f3ff;padding:10px 14px;border-radius:6px;max-width:680px">
+    <div class="alert alert-info" style="border:1px solid rgba(127,127,127,.4);background:rgba(127,127,127,.12);padding:10px 14px;border-radius:6px;max-width:680px">
       <b>Pulled <?= count($results) ?> playlist(s)<?= $showName ? ' for "' . htmlspecialchars($showName) . '"' : '' ?></b>
       <table class="table table-striped" style="width:100%;margin-top:6px">
         <thead><tr><th>Playlist</th><th>Result</th></tr></thead>
@@ -391,11 +391,11 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync'], true)) {
           <td><?= (int) $r[1] ?></td>
           <td>
             <?php if ($r[2] === 'up to date'): ?>
-              <span style="color:#1a7f37">up to date</span>
+              <span style="color:#3fb950">up to date</span>
             <?php elseif ($r[2] === 'new'): ?>
-              <span style="color:#0969da">new — not on this box</span>
+              <span style="color:#58a6ff">new — not on this box</span>
             <?php else: ?>
-              <b style="color:#9a6700">update available</b>
+              <b style="color:#d29922">update available</b>
             <?php endif; ?>
           </td>
           <td>

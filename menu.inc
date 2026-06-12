@@ -1,35 +1,11 @@
 <?php
-# Menu entries for the SET:IQ Playlist Importer plugin.
-# type 'content' places the entry under the FPP "Content Setup" menu.
+# One menu entry — the page itself tabs between SET:IQ pull, playlist
+# management, and REQ:IQ viewer requests.
 $menuEntries = Array(
     Array(
-        'text' => 'SET:IQ - Pull from SET:IQ',
+        'text' => 'SET:IQ / REQ:IQ',
         'type' => 'content',
-        'page' => 'pull.php',
-        'wrap' => 1
-    ),
-    Array(
-        'text' => 'SET:IQ - Import Playlists',
-        'type' => 'content',
-        'page' => 'content.php',
-        'wrap' => 1
-    ),
-    Array(
-        'text' => 'SET:IQ - Manage Playlists',
-        'type' => 'content',
-        'page' => 'manage.php',
-        'wrap' => 1
-    ),
-    Array(
-        'text' => 'REQ:IQ - Viewer Requests',
-        'type' => 'content',
-        'page' => 'reqiq.php',
-        'wrap' => 1
-    ),
-    Array(
-        'text' => 'SET:IQ - Home',
-        'type' => 'help',
-        'page' => 'https://github.com/diaquas/fpp-SETIQ',
+        'page' => 'setiq.php',
         'wrap' => 1
     )
 );

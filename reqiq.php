@@ -25,8 +25,10 @@ function reqiq_pid($pidFile) {
 }
 
 function reqiq_start($pluginDir, $logFile) {
-    exec('nohup /usr/bin/php ' . escapeshellarg("$pluginDir/reqiq_listener.php")
-       . ' >> ' . escapeshellarg($logFile) . ' 2>&1 &');
+    // setsid + closed stdin fully detaches the listener from the web
+    // request, so apache reaping the request can't take it down.
+    exec('setsid nohup /usr/bin/php ' . escapeshellarg("$pluginDir/reqiq_listener.php")
+       . ' < /dev/null >> ' . escapeshellarg($logFile) . ' 2>&1 &');
     usleep(500000); // give it a beat so the status below reflects reality
 }
 
@@ -55,6 +57,14 @@ if ($action === 'enable') {
     $notice = $enabled ? 'Listener restarted.' : 'Enable REQ:IQ first.';
 }
 
+// Self-heal: enabled but not running (fresh install, crashed listener,
+// fppd restart that beat the flag) → start it right now. Any visit to
+// this page brings the listener back without operator surgery.
+if ($enabled && !reqiq_pid($pidFile)) {
+    reqiq_start($pluginDir, $logFile);
+    if (!$notice) $notice = 'Listener was not running — started it.';
+}
+
 $pid    = reqiq_pid($pidFile);
 $status = file_exists($statusFile) ? json_decode(file_get_contents($statusFile), true) : null;
 $logTail = file_exists($logFile)
@@ -68,24 +78,24 @@ $logTail = file_exists($logFile)
      <b>Pull from SET:IQ</b>.</p>
 
   <?php if ($notice): ?>
-    <div class="alert alert-success" style="border:1px solid #c3e6cb;background:#eaf7ee;padding:10px 14px;border-radius:6px;max-width:680px"><?= htmlspecialchars($notice) ?></div>
+    <div class="alert alert-success" style="border:1px solid rgba(127,127,127,.4);background:rgba(127,127,127,.12);padding:10px 14px;border-radius:6px;max-width:680px"><?= htmlspecialchars($notice) ?></div>
   <?php endif; ?>
 
   <?php if ($key === ''): ?>
-    <div class="alert alert-danger" style="border:1px solid #f5c6cb;background:#fdecea;padding:10px 14px;border-radius:6px;max-width:680px">
+    <div class="alert alert-danger" style="border:1px solid rgba(127,127,127,.4);background:rgba(127,127,127,.12);padding:10px 14px;border-radius:6px;max-width:680px">
       No show key set. Open <b>SET:IQ - Pull from SET:IQ</b> and save your show key first.
     </div>
   <?php endif; ?>
 
   <table class="table" style="max-width:680px">
     <tr><th style="text-align:left;width:180px">REQ:IQ</th>
-        <td><?= $enabled ? '<b style="color:#1a7f37">Enabled</b>' : '<b style="color:#999">Disabled</b>' ?></td></tr>
+        <td><?= $enabled ? '<b style="color:#3fb950">Enabled</b>' : '<b style="color:#8b949e">Disabled</b>' ?></td></tr>
     <tr><th style="text-align:left">Listener</th>
-        <td><?= $pid ? "<b style=\"color:#1a7f37\">Running</b> (pid $pid)" : '<b style="color:#c0392b">Not running</b>' ?></td></tr>
+        <td><?= $pid ? "<b style=\"color:#3fb950\">Running</b> (pid $pid)" : '<b style="color:#f85149">Not running</b>' ?></td></tr>
     <?php if (is_array($status)): ?>
     <tr><th style="text-align:left">Last heartbeat</th>
         <td><?= htmlspecialchars($status['updatedAt'] ?? '—') ?>
-            <?= !empty($status['error']) ? ' — <span style="color:#c0392b">' . htmlspecialchars($status['error']) . '</span>' : '' ?></td></tr>
+            <?= !empty($status['error']) ? ' — <span style="color:#f85149">' . htmlspecialchars($status['error']) . '</span>' : '' ?></td></tr>
     <tr><th style="text-align:left">FPP playback</th>
         <td><?= htmlspecialchars(($status['statusName'] ?? '—') . (!empty($status['playing']) ? ' — ' . $status['playing'] : '')) ?></td></tr>
     <?php endif; ?>
@@ -102,7 +112,7 @@ $logTail = file_exists($logFile)
 
   <?php if ($logTail): ?>
     <h4>Recent log</h4>
-    <pre style="max-width:880px;max-height:260px;overflow:auto;background:#f6f8fa;border:1px solid #ddd;border-radius:6px;padding:10px;font-size:12px"><?= htmlspecialchars($logTail) ?></pre>
+    <pre style="max-width:880px;max-height:260px;overflow:auto;background:rgba(127,127,127,.12);border:1px solid rgba(127,127,127,.4);border-radius:6px;padding:10px;font-size:12px"><?= htmlspecialchars($logTail) ?></pre>
   <?php endif; ?>
 
   <p><small>The listener starts automatically when FPP boots (while
