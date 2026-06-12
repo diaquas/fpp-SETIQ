@@ -15,6 +15,12 @@ $menuEntries = Array(
         'wrap' => 1
     ),
     Array(
+        'text' => 'REQ:IQ - Viewer Requests',
+        'type' => 'content',
+        'page' => 'reqiq.php',
+        'wrap' => 1
+    ),
+    Array(
         'text' => 'SET:IQ - Home',
         'type' => 'help',
         'page' => 'https://github.com/diaquas/fpp-SETIQ',
