@@ -78,24 +78,24 @@ $logTail = file_exists($logFile)
      <b>Pull from SET:IQ</b>.</p>
 
   <?php if ($notice): ?>
-    <div class="alert alert-success" style="border:1px solid rgba(127,127,127,.4);background:rgba(127,127,127,.12);padding:10px 14px;border-radius:6px;max-width:680px"><?= htmlspecialchars($notice) ?></div>
+    <div class="setiq-alert setiq-alert-ok"><?= htmlspecialchars($notice) ?></div>
   <?php endif; ?>
 
   <?php if ($key === ''): ?>
-    <div class="alert alert-danger" style="border:1px solid rgba(127,127,127,.4);background:rgba(127,127,127,.12);padding:10px 14px;border-radius:6px;max-width:680px">
+    <div class="setiq-alert setiq-alert-err">
       No show key set. Open <b>SET:IQ - Pull from SET:IQ</b> and save your show key first.
     </div>
   <?php endif; ?>
 
   <table class="table" style="max-width:680px">
     <tr><th style="text-align:left;width:180px">REQ:IQ</th>
-        <td><?= $enabled ? '<b style="color:#3fb950">Enabled</b>' : '<b style="color:#8b949e">Disabled</b>' ?></td></tr>
+        <td><?= $enabled ? '<b class="setiq-ok">Enabled</b>' : '<b class="setiq-muted">Disabled</b>' ?></td></tr>
     <tr><th style="text-align:left">Listener</th>
-        <td><?= $pid ? "<b style=\"color:#3fb950\">Running</b> (pid $pid)" : '<b style="color:#f85149">Not running</b>' ?></td></tr>
+        <td><?= $pid ? "<b class=\"setiq-ok\">Running</b> (pid $pid)" : '<b class="setiq-err">Not running</b>' ?></td></tr>
     <?php if (is_array($status)): ?>
     <tr><th style="text-align:left">Last heartbeat</th>
         <td><?= htmlspecialchars($status['updatedAt'] ?? '—') ?>
-            <?= !empty($status['error']) ? ' — <span style="color:#f85149">' . htmlspecialchars($status['error']) . '</span>' : '' ?></td></tr>
+            <?= !empty($status['error']) ? ' — <span class="setiq-err">' . htmlspecialchars($status['error']) . '</span>' : '' ?></td></tr>
     <tr><th style="text-align:left">FPP playback</th>
         <td><?= htmlspecialchars(($status['statusName'] ?? '—') . (!empty($status['playing']) ? ' — ' . $status['playing'] : '')) ?></td></tr>
     <?php endif; ?>
@@ -112,7 +112,7 @@ $logTail = file_exists($logFile)
 
   <?php if ($logTail): ?>
     <h4>Recent log</h4>
-    <pre style="max-width:880px;max-height:260px;overflow:auto;background:rgba(127,127,127,.12);border:1px solid rgba(127,127,127,.4);border-radius:6px;padding:10px;font-size:12px"><?= htmlspecialchars($logTail) ?></pre>
+    <pre class="setiq-log"><?= htmlspecialchars($logTail) ?></pre>
   <?php endif; ?>
 
   <p><small>The listener starts automatically when FPP boots (while

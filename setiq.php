@@ -24,8 +24,64 @@ function setiq_tab_url($tab) {
 }
 ?>
 <style>
-/* Theme-neutral: borders/labels key off currentColor so FPP's light
-   and dark themes both read correctly. */
+/* Theme tokens. FPP 10's "Theme" setting (themeOverride: System
+   Default / Light / Dark) puts data-bs-theme="dark" on <html> — the
+   same hook fpp-dark.css scopes to — so the dark palette below follows
+   that setting (including System Default, which tracks the OS). On
+   FPP ≤ 9 the attribute never exists and the light palette applies,
+   matching its always-light UI. */
+:root {
+  --setiq-ok:    #1a7f37;
+  --setiq-info:  #0969da;
+  --setiq-warn:  #9a6700;
+  --setiq-err:   #cf222e;
+  --setiq-muted: #57606a;
+  --setiq-box-border: rgba(127, 127, 127, 0.4);
+}
+[data-bs-theme="dark"] {
+  --setiq-ok:    #3fb950;
+  --setiq-info:  #58a6ff;
+  --setiq-warn:  #d29922;
+  --setiq-err:   #f85149;
+  --setiq-muted: #8b949e;
+}
+.setiq-ok    { color: var(--setiq-ok); }
+.setiq-info  { color: var(--setiq-info); }
+.setiq-warn  { color: var(--setiq-warn); }
+.setiq-err   { color: var(--setiq-err); }
+.setiq-muted { color: var(--setiq-muted); }
+
+/* Message boxes. Deliberately NOT FPP/Bootstrap .alert — those carry
+   their own text/background colors per theme and fighting them is what
+   made light mode unreadable. Tint via rgba so the page background
+   shows through on both themes; text always inherits the body color. */
+.setiq-alert {
+  border: 1px solid var(--setiq-box-border);
+  border-left: 4px solid var(--setiq-muted);
+  background: rgba(127, 127, 127, 0.1);
+  color: inherit;
+  padding: 10px 14px;
+  border-radius: 6px;
+  max-width: 720px;
+  margin: 0 0 10px;
+}
+.setiq-alert-ok   { border-left-color: var(--setiq-ok);   background: rgba(63, 185, 80, 0.1); }
+.setiq-alert-err  { border-left-color: var(--setiq-err);  background: rgba(248, 81, 73, 0.1); }
+.setiq-alert-info { border-left-color: var(--setiq-info); background: rgba(88, 166, 255, 0.1); }
+
+.setiq-log {
+  max-width: 880px;
+  max-height: 260px;
+  overflow: auto;
+  background: rgba(127, 127, 127, 0.12);
+  border: 1px solid var(--setiq-box-border);
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 12px;
+  color: inherit;
+}
+
+/* Tab bar keys off currentColor so it reads on either theme. */
 .setiq-plugin-tabs {
   display: flex;
   gap: 4px;
