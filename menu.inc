@@ -15,6 +15,12 @@ $menuEntries = Array(
         'wrap' => 1
     ),
     Array(
+        'text' => 'SET:IQ - Manage Playlists',
+        'type' => 'content',
+        'page' => 'manage.php',
+        'wrap' => 1
+    ),
+    Array(
         'text' => 'REQ:IQ - Viewer Requests',
         'type' => 'content',
         'page' => 'reqiq.php',
