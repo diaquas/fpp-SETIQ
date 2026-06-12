@@ -139,6 +139,59 @@ function setiq_update_schedule($showName, $entries) {
         . " written ($replaced replaced, " . count($kept) . ' non-SET:IQ kept)'];
 }
 
+/** Fetch the show's playlists (+ schedule) from the SET:IQ cloud. */
+function setiq_fetch_cloud($base, $key) {
+    // Self-report the hostname so SET:IQ's dialog can show
+    // "last pulled by <host>".
+    list($code, $body) = setiq_get_json(
+        "$base/api/setiq/fpp/playlists?key=" . rawurlencode($key),
+        ['X-FPP-Host: ' . php_uname('n')]
+    );
+    $data = json_decode($body, true);
+    if ($code !== 200 || !is_array($data) || !isset($data['playlists'])) {
+        return ["Couldn't reach SET:IQ or the key is invalid (HTTP $code).", null];
+    }
+    return [null, $data];
+}
+
+/**
+ * Content signature for change detection: the ordered sequence|media
+ * pairs. Durations are excluded on purpose — FPP rewrites them with the
+ * real media length, which would flag every playlist as changed.
+ */
+function setiq_signature($playlist) {
+    $sig = [];
+    foreach (($playlist['mainPlaylist'] ?? []) as $e) {
+        if (!is_array($e)) continue;
+        $sig[] = ($e['sequenceName'] ?? '') . '|' . ($e['mediaName'] ?? '');
+    }
+    return $sig;
+}
+
+/** Signature of the playlist as it exists on this box, or null if absent. */
+function setiq_box_signature($name) {
+    list($code, $body) = setiq_get_json('http://127.0.0.1/api/playlist/' . rawurlencode($name));
+    if ($code !== 200) return null;
+    $pl = json_decode($body, true);
+    return is_array($pl) ? setiq_signature($pl) : null;
+}
+
+/** Compare every cloud playlist against the box: name → [items, status]. */
+function setiq_compare_rows($data) {
+    $rows = [];
+    foreach ($data['playlists'] as $p) {
+        $name = $p['name'] ?? '';
+        if ($name === '') continue;
+        $cloud = setiq_signature($p['playlist'] ?? []);
+        $box = setiq_box_signature($name);
+        if ($box === null)          $status = 'new';
+        elseif ($box === $cloud)    $status = 'up to date';
+        else                        $status = 'update available';
+        $rows[] = [$name, count($cloud), $status];
+    }
+    return $rows;
+}
+
 // Save the key when submitted.
 $key = file_exists($keyFile) ? trim(file_get_contents($keyFile)) : '';
 if (isset($_POST['key'])) {
@@ -147,46 +200,62 @@ if (isset($_POST['key'])) {
 }
 
 $results = [];
+$rows = [];
 $showName = '';
 $error = '';
 $syncMsg = '';
 $schedMsg = '';
 $schedErr = '';
 $action = $_POST['action'] ?? '';
-if ($action === 'pull' || $action === 'sync') {
+// Per-playlist Pull buttons submit their playlist name as "pullone".
+$pullOneName = isset($_POST['pullone']) && is_string($_POST['pullone'])
+             ? trim($_POST['pullone']) : '';
+if ($pullOneName !== '') $action = 'pullone';
+
+if (in_array($action, ['pull', 'check', 'pullone', 'sync'], true)) {
+    $data = null;
     if ($key === '') {
         $error = 'Enter your SET:IQ show key first.';
-    } elseif ($action === 'pull') {
-        // Self-report the hostname so SET:IQ's dialog can show
-        // "last pulled by <host>".
-        list($code, $body) = setiq_get_json(
-            "$SETIQ_BASE/api/setiq/fpp/playlists?key=" . rawurlencode($key),
-            ['X-FPP-Host: ' . php_uname('n')]
-        );
-        $data = json_decode($body, true);
-        if ($code !== 200 || !is_array($data) || !isset($data['playlists'])) {
-            $error = "Couldn't reach SET:IQ or the key is invalid (HTTP $code).";
-        } else {
-            $showName = $data['show'] ?? '';
-            foreach ($data['playlists'] as $p) {
-                $name = $p['name'] ?? '';
-                $json = json_encode($p['playlist'] ?? null);
-                if ($name === '' || $json === null) continue;
-                $rc = setiq_post_playlist($name, $json);
-                $results[] = [$name, $rc === 200 ? 'imported' : "FAILED (HTTP $rc)"];
-            }
-            // Report what's on the box so SET:IQ can reconcile its calendar.
-            list($ok, $msg) = setiq_sync_sequences($SETIQ_BASE, $key);
-            $syncMsg = ($ok ? 'Sequence list synced: ' : 'Sequence sync skipped: ') . $msg;
-            // Push the season schedule into FPP's scheduler so the full
-            // show run exists, not just the playlists.
-            if (!empty($_POST['schedule']) && isset($data['schedule']) && is_array($data['schedule'])) {
-                list($sok, $smsg) = setiq_update_schedule($showName, $data['schedule']);
-                if ($sok) $schedMsg = "FPP schedule updated: $smsg.";
-                else $schedErr = "FPP schedule not updated: $smsg.";
-            }
+    } elseif ($action !== 'sync') {
+        list($error, $data) = setiq_fetch_cloud($SETIQ_BASE, $key);
+        if ($data) $showName = $data['show'] ?? '';
+    }
+
+    if ($action === 'pull' && $data) {
+        foreach ($data['playlists'] as $p) {
+            $name = $p['name'] ?? '';
+            $json = json_encode($p['playlist'] ?? null);
+            if ($name === '' || $json === null) continue;
+            $rc = setiq_post_playlist($name, $json);
+            $results[] = [$name, $rc === 200 ? 'imported' : "FAILED (HTTP $rc)"];
         }
-    } else { // sync only
+        // Report what's on the box so SET:IQ can reconcile its calendar.
+        list($ok, $msg) = setiq_sync_sequences($SETIQ_BASE, $key);
+        $syncMsg = ($ok ? 'Sequence list synced: ' : 'Sequence sync skipped: ') . $msg;
+        // Push the season schedule into FPP's scheduler so the full
+        // show run exists, not just the playlists.
+        if (!empty($_POST['schedule']) && isset($data['schedule']) && is_array($data['schedule'])) {
+            list($sok, $smsg) = setiq_update_schedule($showName, $data['schedule']);
+            if ($sok) $schedMsg = "FPP schedule updated: $smsg.";
+            else $schedErr = "FPP schedule not updated: $smsg.";
+        }
+    } elseif ($action === 'pullone' && $data) {
+        // Update just this playlist's content; the schedule is untouched
+        // (its entries reference playlists by name).
+        $found = false;
+        foreach ($data['playlists'] as $p) {
+            if (($p['name'] ?? '') !== $pullOneName) continue;
+            $found = true;
+            $json = json_encode($p['playlist'] ?? null);
+            $rc = $json === null ? 0 : setiq_post_playlist($pullOneName, $json);
+            $results[] = [$pullOneName, $rc === 200 ? 'imported' : "FAILED (HTTP $rc)"];
+            break;
+        }
+        if (!$found) $error = "SET:IQ has no playlist named \"$pullOneName\" — re-check for updates.";
+        $rows = setiq_compare_rows($data);
+    } elseif ($action === 'check' && $data) {
+        $rows = setiq_compare_rows($data);
+    } elseif ($action === 'sync' && !$error) {
         list($ok, $msg) = setiq_sync_sequences($SETIQ_BASE, $key);
         if ($ok) {
             $syncMsg = "Sequence list synced: $msg. Open SET:IQ and click \"Sync with FPP\".";
@@ -242,9 +311,48 @@ if ($action === 'pull' || $action === 'sync') {
       non-SET:IQ schedule entries are kept)
     </label>
     <button type="submit" class="buttons btn btn-success" name="action" value="pull">Pull from SET:IQ</button>
+    <button type="submit" class="buttons btn btn-default" name="action" value="check"
+            title="Compare every SET:IQ playlist against this box without changing anything">Check for updates</button>
     <button type="submit" class="buttons btn btn-default" name="action" value="sync"
             title="Report this box's .fseq list to SET:IQ without pulling playlists">Sync sequence list only</button>
   </form>
+
+  <?php if ($rows): ?>
+    <h3 style="margin-top:1.2em">Playlists<?= $showName ? ' — ' . htmlspecialchars($showName) : '' ?></h3>
+    <table class="table table-striped" style="max-width:880px">
+      <thead><tr><th>Playlist</th><th>Items</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+      <?php foreach ($rows as $r): ?>
+        <tr>
+          <td><?= htmlspecialchars($r[0]) ?></td>
+          <td><?= (int) $r[1] ?></td>
+          <td>
+            <?php if ($r[2] === 'up to date'): ?>
+              <span style="color:#1a7f37">up to date</span>
+            <?php elseif ($r[2] === 'new'): ?>
+              <span style="color:#0969da">new — not on this box</span>
+            <?php else: ?>
+              <b style="color:#9a6700">update available</b>
+            <?php endif; ?>
+          </td>
+          <td>
+            <?php if ($r[2] !== 'up to date'): ?>
+              <form method="post" style="margin:0">
+                <button type="submit" class="buttons btn btn-default btn-sm"
+                        name="pullone" value="<?= htmlspecialchars($r[0]) ?>"
+                        title="Pull only this playlist's content; the schedule is untouched">Pull this playlist</button>
+              </form>
+            <?php endif; ?>
+          </td>
+        </tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
+    <p><small>Per-playlist pull updates that playlist's content only.
+       &ldquo;Pull from SET:IQ&rdquo; refreshes everything, including the
+       FPP schedule and the sequence reconcile. Status compares the
+       sequence/media lineup; FPP-computed durations are ignored.</small></p>
+  <?php endif; ?>
 
   <p style="margin-top:1em"><small>Your key is stored on this FPP only
      (<code><?= htmlspecialchars($keyFile) ?></code>). Find imported playlists under
