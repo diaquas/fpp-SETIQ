@@ -56,14 +56,39 @@ function setiq_local_sequences() {
     return $names;
 }
 
+/** Seconds for one sequence from FPP's meta endpoint, or null. */
+function setiq_sequence_duration($name) {
+    list($code, $body) = setiq_get_json(
+        'http://127.0.0.1/api/sequence/' . rawurlencode($name) . '/meta'
+    );
+    if ($code !== 200) return null;
+    $meta = json_decode($body, true);
+    if (!is_array($meta)) return null;
+    $frames = isset($meta['NumFrames']) ? (int) $meta['NumFrames'] : 0;
+    $step   = isset($meta['StepTime'])  ? (int) $meta['StepTime']  : 0; // ms/frame
+    if ($frames <= 0 || $step <= 0) return null;
+    return (int) round($frames * $step / 1000);
+}
+
 /**
  * Report the on-box sequence list to SET:IQ so its calendar can lock
- * songs that aren't here yet ("Sync with FPP" reconcile).
+ * songs that aren't here yet ("Sync with FPP" reconcile). Durations
+ * ride along so the cloud can seed REQ:IQ catalog rows with real
+ * lengths (standalone mode).
  */
 function setiq_sync_sequences($base, $key) {
     $names = setiq_local_sequences();
     if ($names === null) return [false, 'could not read the local sequence list'];
-    $payload = json_encode(['key' => $key, 'sequences' => $names]);
+    $durations = [];
+    foreach ($names as $name) {
+        $d = setiq_sequence_duration($name);
+        if ($d !== null) $durations[$name] = $d;
+    }
+    $payload = json_encode([
+        'key'       => $key,
+        'sequences' => $names,
+        'durations' => (object) $durations,
+    ]);
     $ch = curl_init("$base/api/setiq/fpp/sync");
     curl_setopt_array($ch, [
         CURLOPT_POST           => true,
