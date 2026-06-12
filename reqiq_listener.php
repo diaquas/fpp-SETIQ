@@ -162,6 +162,48 @@ function rq_sync_sequences($CLOUD, $FPP, $key) {
     ]);
 }
 
+/**
+ * Tonight's rotation after the current sequence, for the viewer page's
+ * "Up Next" feed. Reads the ACTIVE show playlist (not the requests
+ * playlist) and rotates it to start after the current item. Cached per
+ * playlist+sequence so steady-state cost is one local read per song.
+ */
+$rqUpcomingKey   = '';
+$rqUpcomingCache = [];
+function rq_build_upcoming($FPP, $playlistName, $currentSeq) {
+    global $rqUpcomingKey, $rqUpcomingCache;
+    $cacheKey = $playlistName . '::' . $currentSeq;
+    if ($cacheKey === $rqUpcomingKey) return $rqUpcomingCache;
+
+    list($code, $data) = rq_get_json("$FPP/api/playlist/" . rawurlencode($playlistName));
+    if ($code !== 200 || !is_array($data) || !isset($data['mainPlaylist'])) return [];
+    $entries = $data['mainPlaylist'];
+    $n = count($entries);
+    if ($n === 0) return [];
+
+    $cur = -1;
+    $want = rq_norm($currentSeq);
+    foreach ($entries as $i => $e) {
+        $s = $e['sequenceName'] ?? '';
+        if ($s !== '' && rq_norm($s) === $want) { $cur = $i; break; }
+    }
+
+    $out = [];
+    for ($k = 1; $k < $n; $k++) {
+        $e = $entries[(($cur < 0 ? -1 : $cur) + $k) % $n];
+        $s = $e['sequenceName'] ?? ($e['mediaName'] ?? '');
+        if ($s === '') continue;
+        $out[] = [
+            'sequence'   => $s,
+            'duration_s' => isset($e['duration']) ? (int) round((float) $e['duration']) : 0,
+        ];
+    }
+
+    $rqUpcomingKey   = $cacheKey;
+    $rqUpcomingCache = $out;
+    return $out;
+}
+
 // ── Singleton guard ───────────────────────────────────────────────────
 
 if (file_exists($pidFile)) {
@@ -212,15 +254,22 @@ while (true) {
 
     // 2. Heartbeat to the cloud.
     $currentPlaylist = $fpp['current_playlist'] ?? null;
+    $playingName     = is_array($currentPlaylist) ? ($currentPlaylist['playlist'] ?? '') : '';
+    $currentSeq      = $fpp['current_sequence'] ?? '';
+    $isPlaying       = strtolower($fpp['status_name'] ?? '') === 'playing';
+    $upcoming        = ($isPlaying && $playingName !== '')
+        ? rq_build_upcoming($FPP, $playingName, $currentSeq)
+        : [];
     list($code, $resp) = rq_post_json("$CLOUD/api/reqiq/fpp/heartbeat", [
         'key' => $key,
         'fpp' => [
             'status_name'       => $fpp['status_name'] ?? '',
-            'current_sequence'  => $fpp['current_sequence'] ?? '',
+            'current_sequence'  => $currentSeq,
             'current_song'      => $fpp['current_song'] ?? '',
             'seconds_played'    => $fpp['seconds_played'] ?? 0,
             'seconds_remaining' => $fpp['seconds_remaining'] ?? 0,
-            'playlist'          => is_array($currentPlaylist) ? ($currentPlaylist['playlist'] ?? '') : '',
+            'playlist'          => $playingName,
+            'upcoming'          => $upcoming,
         ],
     ]);
 
