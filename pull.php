@@ -202,6 +202,84 @@ function setiq_update_schedule($showName, $entries) {
         . " written ($replaced replaced, " . count($kept) . ' non-SET:IQ kept)'];
 }
 
+/**
+ * Read every playlist that already exists on this FPP box: the names
+ * from `GET /api/playlists`, then each playlist's full body (with its
+ * mainPlaylist running order) from `GET /api/playlist/<name>`. Returns a
+ * list of raw FPP playlist objects — the cloud normalizes the shapes.
+ */
+function setiq_local_playlists() {
+    list($code, $body) = setiq_get_json('http://127.0.0.1/api/playlists');
+    if ($code !== 200) return null;
+    $list = json_decode($body, true);
+    if (!is_array($list)) return null;
+    $out = [];
+    foreach ($list as $entry) {
+        // FPP returns either bare name strings or {name: …} objects.
+        $name = is_array($entry) ? ($entry['name'] ?? '') : (is_string($entry) ? $entry : '');
+        $name = trim((string) $name);
+        if ($name === '') continue;
+        list($pc, $pb) = setiq_get_json('http://127.0.0.1/api/playlist/' . rawurlencode($name));
+        if ($pc !== 200) continue;
+        $pl = json_decode($pb, true);
+        if (!is_array($pl)) continue;
+        if (!isset($pl['name'])) $pl['name'] = $name;
+        // Only forward what the cloud needs (name + running order).
+        $out[] = [
+            'name'         => $pl['name'],
+            'mainPlaylist' => isset($pl['mainPlaylist']) && is_array($pl['mainPlaylist'])
+                              ? $pl['mainPlaylist'] : [],
+        ];
+    }
+    return $out;
+}
+
+/** Read this box's scheduler entries (`GET /api/schedule`). */
+function setiq_local_schedule() {
+    list($code, $body) = setiq_get_json('http://127.0.0.1/api/schedule');
+    if ($code !== 200) return null;
+    $sched = json_decode($body, true);
+    return is_array($sched) ? $sched : null;
+}
+
+/**
+ * Push the box's existing playlists + schedule UP to SET:IQ so the
+ * operator can import the show they already built and tweak it in the
+ * app. SET:IQ only stores a snapshot — it never overwrites their season
+ * automatically (the operator reviews and applies in the editor).
+ */
+function setiq_push_import($base, $key) {
+    $playlists = setiq_local_playlists();
+    if ($playlists === null) return [false, 'could not read this box\'s playlists'];
+    $schedule = setiq_local_schedule();
+    if ($schedule === null) $schedule = [];
+    if (count($playlists) === 0 && count($schedule) === 0) {
+        return [false, 'no playlists or schedule found on this FPP'];
+    }
+    $payload = json_encode([
+        'key'       => $key,
+        'host'      => php_uname('n'),
+        'playlists' => $playlists,
+        'schedule'  => $schedule,
+    ]);
+    $ch = curl_init("$base/api/setiq/fpp/import");
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $payload,
+        CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 30,
+    ]);
+    curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if ($code === 404) return [false, 'SET:IQ didn\'t recognize the key'];
+    if ($code !== 200) return [false, "SET:IQ rejected the import (HTTP $code)"];
+    return [true, count($playlists) . ' playlist(s) and ' . count($schedule)
+        . ' schedule entr' . (count($schedule) === 1 ? 'y' : 'ies')
+        . ' sent to SET:IQ'];
+}
+
 /** Fetch the show's playlists (+ schedule) from the SET:IQ cloud. */
 function setiq_fetch_cloud($base, $key) {
     // Self-report the hostname so SET:IQ's dialog can show
@@ -269,17 +347,18 @@ $error = '';
 $syncMsg = '';
 $schedMsg = '';
 $schedErr = '';
+$importMsg = '';
 $action = $_POST['action'] ?? '';
 // Per-playlist Pull buttons submit their playlist name as "pullone".
 $pullOneName = isset($_POST['pullone']) && is_string($_POST['pullone'])
              ? trim($_POST['pullone']) : '';
 if ($pullOneName !== '') $action = 'pullone';
 
-if (in_array($action, ['pull', 'check', 'pullone', 'sync'], true)) {
+if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
     $data = null;
     if ($key === '') {
         $error = 'Enter your SET:IQ show key first.';
-    } elseif ($action !== 'sync') {
+    } elseif ($action !== 'sync' && $action !== 'import') {
         list($error, $data) = setiq_fetch_cloud($SETIQ_BASE, $key);
         if ($data) $showName = $data['show'] ?? '';
     }
@@ -325,6 +404,14 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync'], true)) {
         } else {
             $error = "Sequence sync failed: $msg.";
         }
+    } elseif ($action === 'import' && !$error) {
+        list($ok, $msg) = setiq_push_import($SETIQ_BASE, $key);
+        if ($ok) {
+            $importMsg = "Sent to SET:IQ: $msg. Open SET:IQ → SET:IQ and click "
+                . "\"Import from FPP\" to review and apply it.";
+        } else {
+            $error = "Import failed: $msg.";
+        }
     }
 }
 ?>
@@ -340,6 +427,10 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync'], true)) {
 
   <?php if ($syncMsg): ?>
     <div class="setiq-alert setiq-alert-ok"><?= htmlspecialchars($syncMsg) ?></div>
+  <?php endif; ?>
+
+  <?php if ($importMsg): ?>
+    <div class="setiq-alert setiq-alert-ok"><?= htmlspecialchars($importMsg) ?></div>
   <?php endif; ?>
 
   <?php if ($schedMsg): ?>
@@ -379,6 +470,20 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync'], true)) {
     <button type="submit" class="buttons btn btn-default" name="action" value="sync"
             title="Report this box's .fseq list to SET:IQ without pulling playlists">Sync sequence list only</button>
   </form>
+
+  <div style="max-width:640px;margin-top:1.4em;padding-top:1em;border-top:1px solid #444">
+    <h3 style="margin:0 0 4px">Already built your show in FPP?</h3>
+    <p style="margin:0 0 10px"><small>Send the playlists and schedule you
+       already have on this box <b>up to SET:IQ</b>, so you can fine-tune
+       the show there instead of in FPP. This only uploads a copy for
+       review — nothing on this FPP changes, and SET:IQ won't overwrite
+       your season until you apply the import in its editor.</small></p>
+    <form method="post" style="margin:0">
+      <input type="hidden" name="key" value="<?= htmlspecialchars($key) ?>">
+      <button type="submit" class="buttons btn btn-primary" name="action" value="import"
+              title="Read this box's playlists + schedule and send them to SET:IQ for review">Import current FPP show into SET:IQ</button>
+    </form>
+  </div>
 
   <?php if ($rows): ?>
     <h3 style="margin-top:1.2em">Playlists<?= $showName ? ' — ' . htmlspecialchars($showName) : '' ?></h3>
