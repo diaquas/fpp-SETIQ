@@ -400,7 +400,9 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
     } elseif ($action === 'sync' && !$error) {
         list($ok, $msg) = setiq_sync_sequences($SETIQ_BASE, $key);
         if ($ok) {
-            $syncMsg = "Sequence list synced: $msg. Open SET:IQ and click \"Sync with FPP\".";
+            $syncMsg = "Sequence list synced: $msg. In SET:IQ, click "
+                . "\"Build catalog from FPP\" to start your show from these "
+                . "songs, or \"Sync with FPP\" to reconcile an existing plan.";
         } else {
             $error = "Sequence sync failed: $msg.";
         }
@@ -468,7 +470,7 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
     <button type="submit" class="buttons btn btn-default" name="action" value="check"
             title="Compare every SET:IQ playlist against this box without changing anything">Check for updates</button>
     <button type="submit" class="buttons btn btn-default" name="action" value="sync"
-            title="Report this box's .fseq list to SET:IQ without pulling playlists">Sync sequence list only</button>
+            title="Report this box's .fseq list (with runtimes + song titles) to SET:IQ without pulling playlists — SET:IQ can build your catalog from it or reconcile an existing plan">Sync sequence list only</button>
   </form>
 
   <div style="max-width:640px;margin-top:1.4em;padding-top:1em;border-top:1px solid #444">
