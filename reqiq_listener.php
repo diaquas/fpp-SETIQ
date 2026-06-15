@@ -110,6 +110,49 @@ function rq_refresh_requests_playlist($CLOUD, $FPP, $key) {
     return $name;
 }
 
+/**
+ * Run a live transport directive from the cloud (REQ:IQ Live console)
+ * against the local FPP — the same actions FPP itself exposes during a
+ * show. Each maps to an FPP command via GET /api/command/<Name>[/<arg>].
+ *
+ *   next / prev / restart → step the active playlist
+ *   pause / resume        → Toggle Pause (FPP has a single toggle)
+ *   stop                  → Stop Now
+ *   volume                → Volume Set <0-100>
+ */
+function rq_exec_command($FPP, $command) {
+    $type = is_array($command) ? ($command['type'] ?? '') : '';
+    if ($type === '') return;
+
+    $map = [
+        'next'    => ['Next Playlist Item'],
+        'prev'    => ['Prev Playlist Item'],
+        'restart' => ['Restart Playlist Item'],
+        'stop'    => ['Stop Now'],
+        'pause'   => ['Toggle Pause'],
+        'resume'  => ['Toggle Pause'],
+    ];
+
+    if ($type === 'volume') {
+        $vol = (int) round((float) ($command['value'] ?? 0));
+        $vol = max(0, min(100, $vol));
+        $parts = ['Volume Set', $vol];
+    } elseif (isset($map[$type])) {
+        $parts = $map[$type];
+    } else {
+        rq_log("Unknown transport command \"$type\" — ignored");
+        return;
+    }
+
+    $url = "$FPP/api/command/" . implode('/', array_map('rawurlencode', $parts));
+    list($rc) = rq_get_json($url);
+    if ($rc === 200) {
+        rq_log("Transport: " . implode(' ', $parts));
+    } else {
+        rq_log("FPP rejected transport \"" . implode(' ', $parts) . "\" (HTTP $rc)");
+    }
+}
+
 /** 1-based item index of a sequence inside an FPP playlist, or null. */
 function rq_find_index($FPP, $playlistName, $sequence) {
     list($code, $data) = rq_get_json("$FPP/api/playlist/" . rawurlencode($playlistName));
@@ -372,11 +415,18 @@ while (true) {
         }
     }
 
+    // 4. Execute a live transport directive (next/pause/volume/…), if any.
+    $command = $resp['command'] ?? null;
+    if (is_array($command) && !empty($command['type'])) {
+        rq_exec_command($FPP, $command);
+    }
+
     rq_write_status($statusFile, [
-        'ok'         => true,
-        'playing'    => $fpp['current_sequence'] ?? '',
-        'statusName' => $fpp['status_name'] ?? '',
-        'lastPlay'   => is_array($play) ? ($play['sequence'] ?? '') : '',
+        'ok'          => true,
+        'playing'     => $fpp['current_sequence'] ?? '',
+        'statusName'  => $fpp['status_name'] ?? '',
+        'lastPlay'    => is_array($play) ? ($play['sequence'] ?? '') : '',
+        'lastCommand' => is_array($command) ? ($command['type'] ?? '') : '',
     ]);
 
     sleep($INTERVAL);

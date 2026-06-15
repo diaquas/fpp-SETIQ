@@ -74,7 +74,9 @@ $logTail = file_exists($logFile)
   <h2>REQ:IQ — Viewer Song Requests</h2>
   <p>Lets viewers control the show from their phones. A background
      listener on this FPP reports what's playing to your REQ:IQ page and
-     inserts requested songs into playback. It uses the same show key as
+     inserts requested songs into playback. It also runs live transport
+     commands (next / pause / volume …) and viewer announcements you fire
+     from the REQ:IQ Live console. It uses the same show key as
      <b>Pull from SET:IQ</b>.</p>
 
   <?php if ($notice): ?>
@@ -98,6 +100,10 @@ $logTail = file_exists($logFile)
             <?= !empty($status['error']) ? ' — <span class="setiq-err">' . htmlspecialchars($status['error']) . '</span>' : '' ?></td></tr>
     <tr><th style="text-align:left">FPP playback</th>
         <td><?= htmlspecialchars(($status['statusName'] ?? '—') . (!empty($status['playing']) ? ' — ' . $status['playing'] : '')) ?></td></tr>
+    <?php if (!empty($status['lastCommand'])): ?>
+    <tr><th style="text-align:left">Last transport command</th>
+        <td><?= htmlspecialchars($status['lastCommand']) ?></td></tr>
+    <?php endif; ?>
     <?php endif; ?>
   </table>
 
