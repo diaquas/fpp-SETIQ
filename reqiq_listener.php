@@ -312,6 +312,15 @@ $playlistName     = null;   // cloud tells us; cached after first heartbeat
 $lastPlaylistPull = 0;
 $lastSeqSync      = 0;
 $lastInsertedId   = '';     // re-insert guard if /mark fails
+$lastBeat         = 0;      // when we last POSTed a heartbeat
+$lastSig          = null;   // last reported now-playing signature
+
+// Read local FPP status this often. The localhost status call is cheap, so we
+// poll it fast and only POST to the cloud when the now-playing signature
+// CHANGES or the keepalive ($INTERVAL) is due. That puts the viewer's
+// now-playing within ~1s of FPP reporting a change — instead of waiting out a
+// full heartbeat — without a high steady-state cloud POST rate.
+$POLL = 1;
 
 while (true) {
     if (!rq_enabled($flagFile)) {
@@ -332,20 +341,32 @@ while (true) {
         $lastSeqSync = time();
     }
 
-    // 1. Local playback status.
+    // 1. Local playback status (cheap localhost call, every tick).
     list($fppCode, $fpp) = rq_get_json("$FPP/api/system/status");
     if ($fppCode !== 200 || !is_array($fpp)) {
         rq_write_status($statusFile, ['ok' => false, 'error' => "FPP status unreachable (HTTP $fppCode)"]);
-        sleep($INTERVAL);
+        sleep($POLL);
         continue;
     }
 
-    // 2. Heartbeat to the cloud.
     $currentPlaylist = $fpp['current_playlist'] ?? null;
     $playingName     = is_array($currentPlaylist) ? ($currentPlaylist['playlist'] ?? '') : '';
     $currentSeq      = $fpp['current_sequence'] ?? '';
     $isPlaying       = strtolower($fpp['status_name'] ?? '') === 'playing';
-    $upcoming        = ($isPlaying && $playingName !== '')
+
+    // Only beat when what the viewer sees changes, or the keepalive is due.
+    // The keepalive also bounds how fast a queued transport directive is
+    // picked up, so it stays short.
+    $sig = ($isPlaying ? 'play' : 'stop') . '|' . $currentSeq . '|' . $playingName;
+    if ($sig === $lastSig && (time() - $lastBeat) < $INTERVAL) {
+        sleep($POLL);
+        continue;
+    }
+    $lastSig  = $sig;
+    $lastBeat = time();
+
+    // 2. Heartbeat to the cloud.
+    $upcoming = ($isPlaying && $playingName !== '')
         ? rq_build_upcoming($FPP, $playingName, $currentSeq)
         : [];
     list($code, $resp) = rq_post_json("$CLOUD/api/reqiq/fpp/heartbeat", [
@@ -429,5 +450,5 @@ while (true) {
         'lastCommand' => is_array($command) ? ($command['type'] ?? '') : '',
     ]);
 
-    sleep($INTERVAL);
+    sleep($POLL);
 }
