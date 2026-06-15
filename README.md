@@ -26,7 +26,7 @@ and the internet.
 | **Per-playlist pull** | **Check for updates** compares every cloud playlist against the box (new / update available / up to date, by sequence+media lineup) and offers a **Pull this playlist** button per row — refresh one night without re-importing the season. |
 | **Schedule sync** | Pull also writes the season schedule into FPP's Scheduler — one loop-until-end entry per show night (plus after-hours entries when enabled), so the full show run exists, not just the playlists. Scoped to this show's entries: anything else in your scheduler (background lights, etc.) is preserved. Optional via checkbox. |
 | **Sequence reconcile** | On every Pull (or via **Sync sequence list only**), reports the box's on-board `.fseq` list — with per-sequence runtimes and song titles/artists — back to SET:IQ. Its calendar then locks songs that aren't on FPP yet ("not on FPP yet") and only schedules what will really play. Matching is casing/punctuation-tolerant. |
-| **Build the show from FPP** | Already have a folder full of `.fseq`/`.mp3` files but nothing built in SET:IQ? The same sequence-list report seeds your SET:IQ catalog: open SET:IQ and click **Build catalog from FPP** to start your season from exactly what's on the box — runtimes and titles included — instead of typing every song in by hand. |
+| **Build the show from FPP** | Already have a folder full of `.fseq`/`.mp3` files but nothing built in SET:IQ? The same sequence-list report seeds your SET:IQ catalog: open SET:IQ and click **Pull from FPP** to start your season from exactly what's on the box — runtimes and titles included — instead of typing every song in by hand. The one **Pull from FPP** panel grabs everything the box has that SET:IQ doesn't yet: new sequences, what's still playable, and any playlists/schedule already on the box. |
 | **Pull status** | Self-reports the box's hostname with each pull, so SET:IQ's Send-to-FPP dialog can confirm the loop closed: *"Last pulled by fpp.local today at 4:12 PM · 23 playlists in sync."* |
 | **Manual import** | Fallback for bridge-less setups: upload SET:IQ's exported `.json` playlists via FPP's File Manager, then one-click convert them into real playlists. |
 | **Live "now playing"** | While REQ:IQ is enabled, a lightweight listener (~5 s loop, started with fppd) heartbeats playback status to the cloud — your viewer page shows what's playing, live/offline, in real time. |
@@ -60,7 +60,7 @@ at all.
 
 Use **Sync sequence list only** to refresh the reconcile data without re-importing
 playlists (e.g. right after copying new `.fseq` files to the box). It also feeds
-SET:IQ's **Build catalog from FPP** — the fastest way to start a brand-new show
+SET:IQ's **Pull from FPP** — the fastest way to start a brand-new show
 from the sequences you already have on the box.
 
 ### Manual — import uploaded files
