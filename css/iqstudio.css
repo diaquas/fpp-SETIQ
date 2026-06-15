@@ -1,0 +1,469 @@
+/*
+ * IQ Studio — shared plugin stylesheet (SET:IQ + REQ:IQ).
+ *
+ * Presentation layer only. Loaded once by setiq.php (the tabbed shell),
+ * so every tab shares one consistent look. All PHP logic and curl calls
+ * are untouched — this file just styles the tab bar, panels, status
+ * chips, badges and the few bits FPP's Bootstrap doesn't cover.
+ *
+ * Theming: FPP 10's "Theme" setting puts data-bs-theme="dark" on <html>
+ * (the same hook fpp-dark.css uses). The :root tokens are the light
+ * palette; the [data-bs-theme="dark"] block swaps in the dark palette,
+ * so the plugin tracks FPP's light/dark toggle automatically. On FPP <= 9
+ * the attribute never appears and the light palette applies, matching its
+ * always-light UI. Colors are never hard-coded in markup — everything
+ * reads from these variables.
+ */
+
+:root {
+  /* Brand accents (identical in both themes). */
+  --iq-set:    #2faa5a;
+  --iq-req:    #4f7cff;
+  --iq-violet: #8a64d6;
+  --iq-danger: #c2453f;
+
+  /* Surface + text (light / FPP default white card). */
+  --iq-card:         #ffffff;
+  --iq-card-text:    #1a1c24;
+  --iq-muted:        #5d6470;
+  --iq-border:       #e6e8ec;
+  --iq-subtle:       #f4f5f7;
+  --iq-panel:        #f7f8fa;
+  --iq-input-bg:     #ffffff;
+  --iq-input-border: #cbced4;
+  --iq-stripe-alt:   #f7f8fa;
+  --iq-code-bg:      #0e0e14;
+  --iq-code-text:    #cfe8d3;
+
+  /* Status badge / pill colors. */
+  --iq-ok-bg:  #e7f6ec;  --iq-ok-fg:  #2faa5a;
+  --iq-new-bg: #e9eeff;  --iq-new-fg: #4f7cff;
+  --iq-upd-bg: #fcf2db;  --iq-upd-fg: #9a6b06;
+
+  /* Blue info panel (REQ tab). */
+  --iq-blue-bg:     #f3f6ff;
+  --iq-blue-border: #d6e0ff;
+
+  /* Legacy alert/status tokens (kept for existing markup). */
+  --setiq-ok:    #1a7f37;
+  --setiq-info:  #0969da;
+  --setiq-warn:  #9a6700;
+  --setiq-err:   #cf222e;
+  --setiq-muted: #57606a;
+  --setiq-box-border: rgba(127, 127, 127, 0.4);
+}
+
+[data-bs-theme="dark"] {
+  --iq-card:         #1b1c24;
+  --iq-card-text:    #eceef3;
+  --iq-muted:        #9aa0ac;
+  --iq-border:       #2c2e38;
+  --iq-subtle:       #23242d;
+  --iq-panel:        #21222c;
+  --iq-input-bg:     #14151b;
+  --iq-input-border: #3a3c4a;
+  --iq-stripe-alt:   #252630;
+  --iq-code-bg:      #08080d;
+  --iq-code-text:    #cfe8d3;
+
+  --iq-ok-bg:  rgba(47, 170, 90, 0.18);  --iq-ok-fg:  #2faa5a;
+  --iq-new-bg: rgba(79, 124, 255, 0.18); --iq-new-fg: #4f7cff;
+  --iq-upd-bg: rgba(214, 153, 21, 0.20); --iq-upd-fg: #e8b73e;
+
+  --iq-blue-bg:     rgba(79, 124, 255, 0.10);
+  --iq-blue-border: rgba(79, 124, 255, 0.30);
+
+  --setiq-ok:    #3fb950;
+  --setiq-info:  #58a6ff;
+  --setiq-warn:  #d29922;
+  --setiq-err:   #f85149;
+  --setiq-muted: #8b949e;
+}
+
+/* ── Wordmarks ── colorize the colon (SET green, REQ blue). ── */
+.iq-c-set { color: var(--iq-set); }
+.iq-c-req { color: var(--iq-req); }
+
+/* ── Tab bar ── */
+.setiq-plugin-tabs {
+  display: flex;
+  gap: 4px;
+  align-items: flex-end;
+  margin: 0 0 0;
+  padding: 12px 16px 0;
+  border-bottom: 1px solid var(--iq-border);
+  background: var(--iq-subtle);
+  border-radius: 10px 10px 0 0;
+}
+.setiq-plugin-tabs a {
+  padding: 11px 16px;
+  text-decoration: none;
+  color: var(--iq-muted);
+  font-weight: 600;
+  font-size: 14px;
+  line-height: 1;
+  white-space: nowrap;
+  border: none;
+  border-top: 2.5px solid transparent;
+  border-radius: 8px 8px 0 0;
+  margin-bottom: -1px;
+}
+.setiq-plugin-tabs a:hover { opacity: 0.85; }
+.setiq-plugin-tabs a.active {
+  color: var(--iq-card-text);
+  font-weight: 700;
+  background: var(--iq-card);
+  border-top-color: var(--iq-set);
+}
+.setiq-plugin-tabs a.iq-tab-req.active { border-top-color: var(--iq-req); }
+.setiq-plugin-tabs .setiq-plugin-docs {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--iq-muted);
+  border-top: none;
+  align-self: center;
+}
+.setiq-plugin-tabs .setiq-plugin-docs:hover { opacity: 0.85; }
+
+/* ── Content pane ── */
+.iq-pane {
+  padding: 28px 30px 34px;
+  color: var(--iq-card-text);
+}
+.iq-pane h2.iq-h2 {
+  font: 800 25px/1.2 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  letter-spacing: -0.01em;
+  color: var(--iq-card-text);
+  margin: 0 0 9px;
+}
+.iq-pane h3.iq-h3 {
+  font: 700 16px system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--iq-card-text);
+  margin: 30px 0 12px;
+}
+.iq-pane h3.iq-h3-sm { margin: 0 0 5px; }
+.iq-lede {
+  font: 400 14.5px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--iq-muted);
+  max-width: 780px;
+  margin: 0 0 4px;
+}
+.iq-fine {
+  font: 400 12.5px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--iq-muted);
+}
+.iq-fine code, .iq-pane code { color: inherit; }
+
+/* ── Two-column grids ── */
+.iq-grid {
+  display: grid;
+  gap: 26px;
+  margin-top: 24px;
+  align-items: start;
+}
+.iq-grid-pull { grid-template-columns: 1.45fr 1fr; }
+.iq-grid-even { grid-template-columns: 1fr 1fr; }
+@media (max-width: 760px) {
+  .iq-grid-pull, .iq-grid-even { grid-template-columns: 1fr; }
+}
+
+/* ── Key form ── */
+.iq-label {
+  display: block;
+  font: 700 13px system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--iq-card-text);
+}
+.iq-keyrow {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 8px 0 16px;
+}
+.iq-input {
+  flex: 1;
+  font: 500 14px ui-monospace, Menlo, monospace;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--iq-input-border);
+  background: var(--iq-input-bg);
+  color: var(--iq-card-text);
+  letter-spacing: 0.02em;
+}
+.iq-valid {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 600 12px system-ui, -apple-system, sans-serif;
+  color: var(--iq-set);
+  white-space: nowrap;
+}
+.iq-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  display: inline-block;
+}
+.iq-check {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  font: 400 14px/1.45 system-ui, -apple-system, sans-serif;
+  color: var(--iq-card-text);
+  margin: 0 0 18px;
+  cursor: pointer;
+  max-width: 560px;
+}
+.iq-check input { margin-top: 3px; accent-color: var(--iq-set); }
+.iq-btnrow { display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* ── Buttons (custom accents; the rest stay FPP btn classes) ── */
+.iq-btn-req,
+.iq-btn-req:hover,
+.iq-btn-req:focus {
+  display: inline-block;
+  font: 700 13px system-ui, -apple-system, sans-serif;
+  padding: 10px 17px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  background: var(--iq-req);
+  color: #fff;
+  text-decoration: none;
+}
+.iq-btn-req-outline,
+.iq-btn-req-outline:hover,
+.iq-btn-req-outline:focus {
+  font: 700 13px system-ui, -apple-system, sans-serif;
+  padding: 10px 17px;
+  border-radius: 8px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--iq-req);
+  border: 1px solid var(--iq-req);
+  text-decoration: none;
+}
+.iq-btn-req:hover,
+.iq-btn-req-outline:hover { filter: brightness(1.08); }
+
+/* ── Panels ── */
+.iq-panel {
+  background: var(--iq-panel);
+  border: 1px solid var(--iq-border);
+  border-radius: 12px;
+  padding: 20px;
+}
+.iq-panel-blue {
+  background: var(--iq-blue-bg);
+  border: 1px solid var(--iq-blue-border);
+  border-radius: 12px;
+  padding: 20px;
+}
+.iq-panel-title {
+  font: 700 12px/1 system-ui, -apple-system, sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--iq-muted);
+  margin-bottom: 14px;
+}
+.iq-kvs { display: flex; flex-direction: column; gap: 11px; }
+.iq-kv {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.iq-kv-k {
+  font: 500 13.5px system-ui, -apple-system, sans-serif;
+  color: var(--iq-muted);
+}
+.iq-kv-v {
+  font: 600 13.5px system-ui, -apple-system, sans-serif;
+  color: var(--iq-card-text);
+  text-align: right;
+}
+.iq-kv-v.iq-err { color: var(--setiq-err); }
+.iq-panel-rule {
+  height: 1px;
+  background: var(--iq-border);
+  margin: 15px 0;
+}
+.iq-panel-ok {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: 600 13px system-ui, -apple-system, sans-serif;
+  color: var(--iq-set);
+}
+.iq-panel-foot { margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap; }
+.iq-blue-h {
+  font: 700 14px system-ui, -apple-system, sans-serif;
+  color: var(--iq-card-text);
+  margin-bottom: 6px;
+}
+.iq-blue-p {
+  font: 400 13px/1.5 system-ui, -apple-system, sans-serif;
+  color: var(--iq-muted);
+  margin-bottom: 14px;
+}
+
+/* ── Badges / pills ── */
+.iq-badge,
+.iq-pill {
+  display: inline-block;
+  font: 600 12px system-ui, -apple-system, sans-serif;
+  padding: 4px 11px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+.iq-badge-ok,  .iq-pill-ok  { background: var(--iq-ok-bg);  color: var(--iq-ok-fg); }
+.iq-badge-new, .iq-pill-new { background: var(--iq-new-bg); color: var(--iq-new-fg); }
+.iq-badge-upd, .iq-pill-upd { background: var(--iq-upd-bg); color: var(--iq-upd-fg); }
+.iq-pill-off {
+  display: inline-block;
+  font: 600 12px system-ui, -apple-system, sans-serif;
+  padding: 4px 11px;
+  border-radius: 20px;
+  background: rgba(127, 127, 127, 0.15);
+  color: var(--iq-muted);
+}
+.iq-pill-err {
+  display: inline-block;
+  font: 600 12px system-ui, -apple-system, sans-serif;
+  padding: 4px 11px;
+  border-radius: 20px;
+  background: rgba(207, 34, 46, 0.12);
+  color: var(--setiq-err);
+  white-space: nowrap;
+}
+
+/* ── Stat chips (Manage summary) ── */
+.iq-chips { display: flex; gap: 10px; flex-wrap: wrap; margin: 22px 0 8px; }
+.iq-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 13px 18px;
+  background: var(--iq-panel);
+  border: 1px solid var(--iq-border);
+  border-radius: 11px;
+  min-width: 140px;
+}
+.iq-chip-num {
+  font: 800 22px system-ui, -apple-system, sans-serif;
+  letter-spacing: -0.01em;
+  color: var(--iq-card-text);
+}
+.iq-chip-lbl {
+  font: 500 12px system-ui, -apple-system, sans-serif;
+  color: var(--iq-muted);
+}
+
+/* ── Tables ── round + border the FPP table-striped tables. ── */
+.iq-tablewrap {
+  border: 1px solid var(--iq-border);
+  border-radius: 11px;
+  overflow: hidden;
+  margin-top: 6px;
+}
+.iq-tablewrap .table {
+  margin: 0;
+  color: var(--iq-card-text);
+}
+.iq-tablewrap .table thead th {
+  background: var(--iq-subtle);
+  color: var(--iq-muted);
+  font: 700 11px system-ui, -apple-system, sans-serif;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--iq-border);
+  vertical-align: middle;
+}
+.iq-tablewrap .table tbody td {
+  padding: 12px 16px;
+  border-top: 1px solid var(--iq-border);
+  border-bottom: none;
+  vertical-align: middle;
+  font: 400 14px system-ui, -apple-system, sans-serif;
+  color: var(--iq-muted);
+}
+.iq-tablewrap .table tbody td.iq-name {
+  font-weight: 600;
+  color: var(--iq-card-text);
+}
+.iq-tablewrap .table tbody tr:first-child td { border-top: none; }
+.iq-tablewrap .table.table-striped > tbody > tr:nth-of-type(odd) > * {
+  background: var(--iq-stripe-alt);
+}
+.iq-num { text-align: center; }
+
+/* ── Divider ── */
+.iq-divider {
+  height: 1px;
+  background: var(--iq-border);
+  border: none;
+  margin: 32px 0 24px;
+}
+
+/* ── Action row (Manage delete) ── */
+.iq-actionrow {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 20px;
+  flex-wrap: wrap;
+}
+
+/* ── Code block (REQ log) — green on near-black, both themes. ── */
+.iq-pre {
+  font: 400 11.5px/1.7 ui-monospace, Menlo, monospace;
+  color: var(--iq-code-text);
+  background: var(--iq-code-bg);
+  border-radius: 10px;
+  padding: 14px 16px;
+  overflow: auto;
+  max-height: 260px;
+  white-space: pre-wrap;
+  margin: 0;
+}
+
+/* ════════════════════════════════════════════════════════════
+   Legacy classes — kept so existing markup keeps working.
+   ════════════════════════════════════════════════════════════ */
+.setiq-ok    { color: var(--setiq-ok); }
+.setiq-info  { color: var(--setiq-info); }
+.setiq-warn  { color: var(--setiq-warn); }
+.setiq-err   { color: var(--setiq-err); }
+.setiq-muted { color: var(--setiq-muted); }
+
+/* Message boxes. Deliberately NOT FPP/Bootstrap .alert — those carry
+   their own per-theme colors and fighting them is what made light mode
+   unreadable. Tint via rgba so the page background shows through on both
+   themes; text always inherits the body color. */
+.setiq-alert {
+  border: 1px solid var(--setiq-box-border);
+  border-left: 4px solid var(--setiq-muted);
+  background: rgba(127, 127, 127, 0.1);
+  color: inherit;
+  padding: 10px 14px;
+  border-radius: 6px;
+  max-width: 720px;
+  margin: 0 0 10px;
+}
+.setiq-alert-ok   { border-left-color: var(--setiq-ok);   background: rgba(63, 185, 80, 0.1); }
+.setiq-alert-err  { border-left-color: var(--setiq-err);  background: rgba(248, 81, 73, 0.1); }
+.setiq-alert-info { border-left-color: var(--setiq-info); background: rgba(88, 166, 255, 0.1); }
+
+.setiq-log {
+  max-width: 880px;
+  max-height: 260px;
+  overflow: auto;
+  background: rgba(127, 127, 127, 0.12);
+  border: 1px solid var(--setiq-box-border);
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 12px;
+  color: inherit;
+}

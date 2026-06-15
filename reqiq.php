@@ -71,59 +71,85 @@ $logTail = file_exists($logFile)
          ? implode("", array_slice(file($logFile), -15)) : '';
 ?>
 <div class="container-fluid">
-  <h2>REQ:IQ — Viewer Song Requests</h2>
-  <p>Lets viewers control the show from their phones. A background
-     listener on this FPP reports what's playing to your REQ:IQ page and
-     inserts requested songs into playback. It also runs live transport
-     commands (next / pause / volume …) and viewer announcements you fire
-     from the REQ:IQ Live console. It uses the same show key as
-     <b>Pull from SET:IQ</b>.</p>
+ <div class="iq-pane">
+  <h2 class="iq-h2">REQ<span class="iq-c-req">:</span>IQ — Viewer Song Requests</h2>
+  <p class="iq-lede">A background listener on this FPP reports what's playing to
+     your REQ:IQ page and inserts requested songs into playback. It also carries
+     out the transport commands and announcements your operators fire from the
+     cloud REQ:IQ page — this listener just relays them. Uses the same show key
+     as <b>Pull from SET:IQ</b>.</p>
 
   <?php if ($notice): ?>
-    <div class="setiq-alert setiq-alert-ok"><?= htmlspecialchars($notice) ?></div>
+    <div class="setiq-alert setiq-alert-ok" style="margin-top:14px"><?= htmlspecialchars($notice) ?></div>
   <?php endif; ?>
 
   <?php if ($key === ''): ?>
-    <div class="setiq-alert setiq-alert-err">
-      No show key set. Open <b>SET:IQ - Pull from SET:IQ</b> and save your show key first.
+    <div class="setiq-alert setiq-alert-err" style="margin-top:14px">
+      No show key set. Open <b>SET:IQ — Pull</b> and save your show key first.
     </div>
   <?php endif; ?>
 
-  <table class="table" style="max-width:680px">
-    <tr><th style="text-align:left;width:180px">REQ:IQ</th>
-        <td><?= $enabled ? '<b class="setiq-ok">Enabled</b>' : '<b class="setiq-muted">Disabled</b>' ?></td></tr>
-    <tr><th style="text-align:left">Listener</th>
-        <td><?= $pid ? "<b class=\"setiq-ok\">Running</b> (pid $pid)" : '<b class="setiq-err">Not running</b>' ?></td></tr>
-    <?php if (is_array($status)): ?>
-    <tr><th style="text-align:left">Last heartbeat</th>
-        <td><?= htmlspecialchars($status['updatedAt'] ?? '—') ?>
-            <?= !empty($status['error']) ? ' — <span class="setiq-err">' . htmlspecialchars($status['error']) . '</span>' : '' ?></td></tr>
-    <tr><th style="text-align:left">FPP playback</th>
-        <td><?= htmlspecialchars(($status['statusName'] ?? '—') . (!empty($status['playing']) ? ' — ' . $status['playing'] : '')) ?></td></tr>
-    <?php if (!empty($status['lastCommand'])): ?>
-    <tr><th style="text-align:left">Last transport command</th>
-        <td><?= htmlspecialchars($status['lastCommand']) ?></td></tr>
-    <?php endif; ?>
-    <?php endif; ?>
-  </table>
+  <div class="iq-grid iq-grid-even">
+    <!-- left: listener status -->
+    <div class="iq-panel">
+      <div class="iq-panel-title">Listener status</div>
+      <div class="iq-kvs">
+        <div class="iq-kv">
+          <span class="iq-kv-k">REQ:IQ</span>
+          <?= $enabled ? '<span class="iq-pill-ok">Enabled</span>' : '<span class="iq-pill-off">Disabled</span>' ?>
+        </div>
+        <div class="iq-kv">
+          <span class="iq-kv-k">Listener</span>
+          <?= $pid ? '<span class="iq-pill-ok">Running · pid ' . (int) $pid . '</span>' : '<span class="iq-pill-err">Not running</span>' ?>
+        </div>
+        <?php if (is_array($status)): ?>
+          <div class="iq-kv">
+            <span class="iq-kv-k">Last heartbeat</span>
+            <span class="iq-kv-v<?= !empty($status['error']) ? ' iq-err' : '' ?>"><?= htmlspecialchars($status['updatedAt'] ?? '—') ?><?= !empty($status['error']) ? ' — ' . htmlspecialchars($status['error']) : '' ?></span>
+          </div>
+          <div class="iq-kv">
+            <span class="iq-kv-k">FPP playback</span>
+            <span class="iq-kv-v"><?= htmlspecialchars(($status['statusName'] ?? '—') . (!empty($status['playing']) ? ' — ' . $status['playing'] : '')) ?></span>
+          </div>
+          <?php if (!empty($status['lastCommand'])): ?>
+          <div class="iq-kv">
+            <span class="iq-kv-k">Last transport</span>
+            <span class="iq-kv-v"><?= htmlspecialchars($status['lastCommand']) ?></span>
+          </div>
+          <?php endif; ?>
+        <?php endif; ?>
+      </div>
+      <form method="post" class="iq-panel-foot">
+        <?php if ($enabled): ?>
+          <button type="submit" class="buttons btn btn-default" name="action" value="disable">Disable REQ:IQ</button>
+          <button type="submit" class="buttons btn btn-default" name="action" value="restart">Restart listener</button>
+        <?php else: ?>
+          <button type="submit" class="buttons btn btn-success" name="action" value="enable" <?= $key === '' ? 'disabled' : '' ?>>Enable REQ:IQ</button>
+        <?php endif; ?>
+      </form>
+    </div>
 
-  <form method="post" style="margin:12px 0">
-    <?php if ($enabled): ?>
-      <button type="submit" class="buttons btn btn-default" name="action" value="disable">Disable REQ:IQ</button>
-      <button type="submit" class="buttons btn btn-default" name="action" value="restart">Restart listener</button>
-    <?php else: ?>
-      <button type="submit" class="buttons btn btn-success" name="action" value="enable" <?= $key === '' ? 'disabled' : '' ?>>Enable REQ:IQ</button>
-    <?php endif; ?>
-  </form>
+    <!-- right: cloud console pointer + recent log -->
+    <div>
+      <div class="iq-panel-blue">
+        <div class="iq-blue-h">Running the show live</div>
+        <p class="iq-blue-p">Now-playing, transport controls, viewer announcements
+           and the request queue live on your <b>REQ:IQ viewer page</b> in the
+           cloud. This listener relays them to FPP — there's nothing to operate
+           here.</p>
+        <a href="https://lightsofelmridge.com" target="_blank" rel="noopener" class="iq-btn-req">Open REQ:IQ page ↗</a>
+      </div>
+      <?php if ($logTail): ?>
+        <div class="iq-panel-title" style="margin:20px 0 10px">Recent log</div>
+        <pre class="iq-pre"><?= htmlspecialchars($logTail) ?></pre>
+      <?php endif; ?>
+    </div>
+  </div>
 
-  <?php if ($logTail): ?>
-    <h4>Recent log</h4>
-    <pre class="setiq-log"><?= htmlspecialchars($logTail) ?></pre>
-  <?php endif; ?>
-
-  <p><small>The listener starts automatically when FPP boots (while
-     enabled), heartbeats every few seconds to
-     <code>lightsofelmridge.com</code>, and maintains a
-     <code>REQIQ Requests</code> playlist it inserts requested songs
-     from. Log: <code><?= htmlspecialchars($logFile) ?></code></small></p>
+  <p class="iq-fine" style="margin-top:22px">The listener starts automatically
+     when FPP boots (while enabled), heartbeats every few seconds to
+     <code>lightsofelmridge.com</code>, and maintains a <code>REQIQ Requests</code>
+     playlist it inserts requested songs from.
+     Log: <code><?= htmlspecialchars($logFile) ?></code></p>
+ </div>
 </div>

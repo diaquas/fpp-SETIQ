@@ -10,8 +10,20 @@ $pluginName = 'fpp-SETIQ';
 $cfgDir  = (isset($settings['configDirectory']) && $settings['configDirectory'])
            ? $settings['configDirectory'] : '/home/fpp/media/config';
 $keyFile = "$cfgDir/$pluginName.key";
+$pullStatusFile = "$cfgDir/$pluginName.pull-status.json";
 
 $SETIQ_BASE = 'https://lightsofelmridge.com';
+
+/** Render the "Last pull" timestamp as "today · 4:12 PM" / "Jun 3 · …". */
+function setiq_pull_when($ts) {
+    $ts = (int) $ts;
+    if ($ts <= 0) return '—';
+    $d = date('Y-m-d', $ts);
+    if ($d === date('Y-m-d'))                 $day = 'today';
+    elseif ($d === date('Y-m-d', time() - 86400)) $day = 'yesterday';
+    else                                      $day = date('M j', $ts);
+    return $day . ' · ' . date('g:i A', $ts);
+}
 
 function setiq_get_json($url, $extraHeaders = []) {
     $ch = curl_init($url);
@@ -110,7 +122,7 @@ function setiq_media_id3($mediaName) {
  */
 function setiq_sync_sequences($base, $key) {
     $names = setiq_local_sequences();
-    if ($names === null) return [false, 'could not read the local sequence list'];
+    if ($names === null) return [false, 'could not read the local sequence list', 0];
     $durations = [];
     $id3       = [];
     foreach ($names as $name) {
@@ -139,8 +151,8 @@ function setiq_sync_sequences($base, $key) {
     $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
     return $code === 200
-        ? [true, count($names) . ' sequence(s) reported to SET:IQ']
-        : [false, "SET:IQ rejected the sync (HTTP $code)"];
+        ? [true, count($names) . ' sequence(s) reported to SET:IQ', count($names)]
+        : [false, "SET:IQ rejected the sync (HTTP $code)", count($names)];
 }
 
 /**
@@ -382,7 +394,7 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
             $results[] = [$name, $rc === 200 ? 'imported' : "FAILED (HTTP $rc)"];
         }
         // Report what's on the box so SET:IQ can reconcile its calendar.
-        list($ok, $msg) = setiq_sync_sequences($SETIQ_BASE, $key);
+        list($ok, $msg, $seqCount) = setiq_sync_sequences($SETIQ_BASE, $key);
         $syncMsg = ($ok ? 'Sequence list synced: ' : 'Sequence sync skipped: ') . $msg;
         // Push the season schedule into FPP's scheduler so the full
         // show run exists, not just the playlists.
@@ -391,6 +403,15 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
             if ($sok) $schedMsg = "FPP schedule updated: $smsg.";
             else $schedErr = "FPP schedule not updated: $smsg.";
         }
+        // Persist a small snapshot to back the "Last pull" status panel.
+        @file_put_contents($pullStatusFile, json_encode([
+            'host'       => php_uname('n'),
+            'when'       => time(),
+            'show'       => $showName,
+            'playlists'  => count($data['playlists']),
+            'sequences'  => $seqCount,
+            'reconciled' => $ok,
+        ]));
     } elseif ($action === 'pullone' && $data) {
         // Update just this playlist's content; the schedule is untouched
         // (its entries reference playlists by name).
@@ -426,118 +447,161 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
         }
     }
 }
+
+// Backing data for the "Last pull" status panel (written after each pull).
+$pullStatus = file_exists($pullStatusFile)
+            ? json_decode(file_get_contents($pullStatusFile), true) : null;
+if (!is_array($pullStatus)) $pullStatus = null;
 ?>
 <div class="container-fluid">
-  <h2>SET:IQ — Pull from SET:IQ</h2>
-  <p>Paste your show key from SET:IQ (<b>Send to FPP</b> dialog), then click
-     <b>Pull</b> to fetch and create every night's playlist. Re-pull whenever
-     you change the season in SET:IQ.</p>
+ <div class="iq-pane">
+  <h2 class="iq-h2">SET<span class="iq-c-set">:</span>IQ — Pull from SET<span class="iq-c-set">:</span>IQ</h2>
+  <p class="iq-lede">Paste your show key from SET:IQ's <b>Send to FPP</b> dialog,
+     then Pull to fetch and create every night's playlist. Re-pull whenever you
+     change the season in SET:IQ.</p>
 
   <?php if ($error): ?>
-    <div class="setiq-alert setiq-alert-err"><?= htmlspecialchars($error) ?></div>
+    <div class="setiq-alert setiq-alert-err" style="margin-top:14px"><?= htmlspecialchars($error) ?></div>
   <?php endif; ?>
 
   <?php if ($syncMsg): ?>
-    <div class="setiq-alert setiq-alert-ok"><?= htmlspecialchars($syncMsg) ?></div>
+    <div class="setiq-alert setiq-alert-ok" style="margin-top:14px"><?= htmlspecialchars($syncMsg) ?></div>
   <?php endif; ?>
 
   <?php if ($importMsg): ?>
-    <div class="setiq-alert setiq-alert-ok"><?= htmlspecialchars($importMsg) ?></div>
+    <div class="setiq-alert setiq-alert-ok" style="margin-top:14px"><?= htmlspecialchars($importMsg) ?></div>
   <?php endif; ?>
 
   <?php if ($schedMsg): ?>
-    <div class="setiq-alert setiq-alert-ok"><?= htmlspecialchars($schedMsg) ?></div>
+    <div class="setiq-alert setiq-alert-ok" style="margin-top:14px"><?= htmlspecialchars($schedMsg) ?></div>
   <?php endif; ?>
 
   <?php if ($schedErr): ?>
-    <div class="setiq-alert setiq-alert-err"><?= htmlspecialchars($schedErr) ?></div>
+    <div class="setiq-alert setiq-alert-err" style="margin-top:14px"><?= htmlspecialchars($schedErr) ?></div>
   <?php endif; ?>
 
   <?php if ($results): ?>
-    <div class="setiq-alert setiq-alert-info">
+    <div class="setiq-alert setiq-alert-info" style="margin-top:14px">
       <b>Pulled <?= count($results) ?> playlist(s)<?= $showName ? ' for "' . htmlspecialchars($showName) . '"' : '' ?></b>
-      <table class="table table-striped" style="width:100%;margin-top:6px">
-        <thead><tr><th>Playlist</th><th>Result</th></tr></thead>
+      <div class="iq-tablewrap" style="margin-top:8px">
+        <table class="table table-striped" style="width:100%">
+          <thead><tr><th>Playlist</th><th>Result</th></tr></thead>
+          <tbody>
+          <?php foreach ($results as $r): ?>
+            <tr><td class="iq-name"><?= htmlspecialchars($r[0]) ?></td><td><?= htmlspecialchars($r[1]) ?></td></tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  <?php endif; ?>
+
+  <div class="iq-grid iq-grid-pull">
+    <!-- left: key form -->
+    <form method="post">
+      <label class="iq-label" for="setiq-key">SET:IQ show key</label>
+      <div class="iq-keyrow">
+        <input type="text" id="setiq-key" name="key" class="iq-input"
+               value="<?= htmlspecialchars($key) ?>" placeholder="paste your key" autocomplete="off">
+        <?php if ($key !== ''): ?>
+          <span class="iq-valid"><span class="iq-dot"></span>valid</span>
+        <?php endif; ?>
+      </div>
+      <label class="iq-check">
+        <input type="checkbox" name="schedule" value="1" <?= ($_SERVER['REQUEST_METHOD'] !== 'POST' || !empty($_POST['schedule'])) ? 'checked' : '' ?>>
+        <span>Also update the FPP schedule (writes one entry per show night;
+              your non-SET:IQ schedule entries are kept)</span>
+      </label>
+      <div class="iq-btnrow">
+        <button type="submit" class="buttons btn btn-success" name="action" value="pull">Pull from SET:IQ</button>
+        <button type="submit" class="buttons btn btn-default" name="action" value="check"
+                title="Compare every SET:IQ playlist against this box without changing anything">Check for updates</button>
+        <button type="submit" class="buttons btn btn-default" name="action" value="sync"
+                title="Report this box's .fseq list (with runtimes + song titles) to SET:IQ without pulling playlists — SET:IQ can build your catalog from it or reconcile an existing plan">Sync sequence list only</button>
+      </div>
+    </form>
+
+    <!-- right: last pull status panel -->
+    <div class="iq-panel">
+      <div class="iq-panel-title">Last pull</div>
+      <?php if ($pullStatus): ?>
+        <div class="iq-kvs">
+          <div class="iq-kv"><span class="iq-kv-k">Host</span><span class="iq-kv-v"><?= htmlspecialchars($pullStatus['host'] ?? '—') ?></span></div>
+          <div class="iq-kv"><span class="iq-kv-k">When</span><span class="iq-kv-v"><?= htmlspecialchars(setiq_pull_when($pullStatus['when'] ?? 0)) ?></span></div>
+          <div class="iq-kv"><span class="iq-kv-k">Playlists</span><span class="iq-kv-v"><?= (int) ($pullStatus['playlists'] ?? 0) ?> in sync</span></div>
+          <div class="iq-kv"><span class="iq-kv-k">Sequences</span><span class="iq-kv-v"><?= (int) ($pullStatus['sequences'] ?? 0) ?> reported</span></div>
+        </div>
+        <div class="iq-panel-rule"></div>
+        <?php if (!empty($pullStatus['reconciled'])): ?>
+          <div class="iq-panel-ok"><span class="iq-dot"></span>Calendar reconciled — nothing missing</div>
+        <?php else: ?>
+          <div class="iq-fine">Sequence reconcile was skipped on the last pull.</div>
+        <?php endif; ?>
+      <?php else: ?>
+        <div class="iq-fine">No pull yet. Paste your key and click
+          <b>Pull from SET:IQ</b> to fetch this season's playlists.</div>
+      <?php endif; ?>
+    </div>
+  </div>
+
+  <?php if ($rows): ?>
+    <h3 class="iq-h3">Playlists<?= $showName ? ' — ' . htmlspecialchars($showName) : '' ?></h3>
+    <div class="iq-tablewrap">
+      <table class="table table-striped">
+        <thead><tr><th>Playlist</th><th class="iq-num">Items</th><th>Status</th><th></th></tr></thead>
         <tbody>
-        <?php foreach ($results as $r): ?>
-          <tr><td><?= htmlspecialchars($r[0]) ?></td><td><?= htmlspecialchars($r[1]) ?></td></tr>
+        <?php foreach ($rows as $r): ?>
+          <tr>
+            <td class="iq-name"><?= htmlspecialchars($r[0]) ?></td>
+            <td class="iq-num"><?= (int) $r[1] ?></td>
+            <td>
+              <?php if ($r[2] === 'up to date'): ?>
+                <span class="iq-badge iq-badge-ok">up to date</span>
+              <?php elseif ($r[2] === 'new'): ?>
+                <span class="iq-badge iq-badge-new">new — not on box</span>
+              <?php else: ?>
+                <span class="iq-badge iq-badge-upd">update available</span>
+              <?php endif; ?>
+            </td>
+            <td>
+              <?php if ($r[2] !== 'up to date'): ?>
+                <form method="post" style="margin:0">
+                  <button type="submit" class="buttons btn btn-default btn-sm"
+                          name="pullone" value="<?= htmlspecialchars($r[0]) ?>"
+                          title="Pull only this playlist's content; the schedule is untouched">Pull this playlist</button>
+                </form>
+              <?php endif; ?>
+            </td>
+          </tr>
         <?php endforeach; ?>
         </tbody>
       </table>
     </div>
+    <p class="iq-fine" style="margin-top:10px">Per-playlist pull updates that
+       playlist's content only. &ldquo;Pull from SET:IQ&rdquo; refreshes
+       everything, including the FPP schedule and the sequence reconcile.
+       Status compares the sequence/media lineup; FPP-computed durations are
+       ignored.</p>
   <?php endif; ?>
 
-  <form method="post" style="max-width:640px">
-    <label for="setiq-key"><b>SET:IQ show key</b></label><br>
-    <input type="text" id="setiq-key" name="key" value="<?= htmlspecialchars($key) ?>"
-           placeholder="paste your key" style="width:100%;padding:7px 9px;margin:6px 0 12px" autocomplete="off">
-    <label style="display:block;margin:0 0 12px">
-      <input type="checkbox" name="schedule" value="1" <?= ($_SERVER['REQUEST_METHOD'] !== 'POST' || !empty($_POST['schedule'])) ? 'checked' : '' ?>>
-      Also update the FPP schedule (writes one entry per show night; your
-      non-SET:IQ schedule entries are kept)
-    </label>
-    <button type="submit" class="buttons btn btn-success" name="action" value="pull">Pull from SET:IQ</button>
-    <button type="submit" class="buttons btn btn-default" name="action" value="check"
-            title="Compare every SET:IQ playlist against this box without changing anything">Check for updates</button>
-    <button type="submit" class="buttons btn btn-default" name="action" value="sync"
-            title="Report this box's .fseq list (with runtimes + song titles) to SET:IQ without pulling playlists — SET:IQ can build your catalog from it or reconcile an existing plan">Sync sequence list only</button>
+  <hr class="iq-divider">
+  <h3 class="iq-h3 iq-h3-sm">Already built your show in FPP?</h3>
+  <p class="iq-fine" style="max-width:780px;margin-bottom:12px">Send the
+     playlists and schedule you already have on this box <b>up to SET:IQ</b>, so
+     you can fine-tune the show there instead of in FPP. This only uploads a copy
+     for review — nothing on this FPP changes, and SET:IQ won't overwrite your
+     season until you apply the import in its editor.</p>
+  <form method="post" style="margin:0">
+    <input type="hidden" name="key" value="<?= htmlspecialchars($key) ?>">
+    <button type="submit" class="iq-btn-req-outline" name="action" value="import"
+            title="Read this box's playlists + schedule and send them to SET:IQ for review">Import current FPP show into SET:IQ</button>
   </form>
 
-  <div style="max-width:640px;margin-top:1.4em;padding-top:1em;border-top:1px solid #444">
-    <h3 style="margin:0 0 4px">Already built your show in FPP?</h3>
-    <p style="margin:0 0 10px"><small>Send the playlists and schedule you
-       already have on this box <b>up to SET:IQ</b>, so you can fine-tune
-       the show there instead of in FPP. This only uploads a copy for
-       review — nothing on this FPP changes, and SET:IQ won't overwrite
-       your season until you apply the import in its editor.</small></p>
-    <form method="post" style="margin:0">
-      <input type="hidden" name="key" value="<?= htmlspecialchars($key) ?>">
-      <button type="submit" class="buttons btn btn-primary" name="action" value="import"
-              title="Read this box's playlists + schedule and send them to SET:IQ for review">Import current FPP show into SET:IQ</button>
-    </form>
-  </div>
-
-  <?php if ($rows): ?>
-    <h3 style="margin-top:1.2em">Playlists<?= $showName ? ' — ' . htmlspecialchars($showName) : '' ?></h3>
-    <table class="table table-striped" style="max-width:880px">
-      <thead><tr><th>Playlist</th><th>Items</th><th>Status</th><th></th></tr></thead>
-      <tbody>
-      <?php foreach ($rows as $r): ?>
-        <tr>
-          <td><?= htmlspecialchars($r[0]) ?></td>
-          <td><?= (int) $r[1] ?></td>
-          <td>
-            <?php if ($r[2] === 'up to date'): ?>
-              <span class="setiq-ok">up to date</span>
-            <?php elseif ($r[2] === 'new'): ?>
-              <span class="setiq-info">new — not on this box</span>
-            <?php else: ?>
-              <b class="setiq-warn">update available</b>
-            <?php endif; ?>
-          </td>
-          <td>
-            <?php if ($r[2] !== 'up to date'): ?>
-              <form method="post" style="margin:0">
-                <button type="submit" class="buttons btn btn-default btn-sm"
-                        name="pullone" value="<?= htmlspecialchars($r[0]) ?>"
-                        title="Pull only this playlist's content; the schedule is untouched">Pull this playlist</button>
-              </form>
-            <?php endif; ?>
-          </td>
-        </tr>
-      <?php endforeach; ?>
-      </tbody>
-    </table>
-    <p><small>Per-playlist pull updates that playlist's content only.
-       &ldquo;Pull from SET:IQ&rdquo; refreshes everything, including the
-       FPP schedule and the sequence reconcile. Status compares the
-       sequence/media lineup; FPP-computed durations are ignored.</small></p>
-  <?php endif; ?>
-
-  <p style="margin-top:1em"><small>Your key is stored on this FPP only
-     (<code><?= htmlspecialchars($keyFile) ?></code>). Find imported playlists under
-     Content Setup &rarr; Playlists and the show run under Content Setup &rarr;
-     Scheduler. Pull also reports this box's sequence list to
-     SET:IQ, so its calendar can flag songs whose .fseq isn't here yet
-     (&ldquo;Sync with FPP&rdquo;).</small></p>
+  <p class="iq-fine" style="margin-top:22px">Your key is stored on this FPP only
+     (<code><?= htmlspecialchars($keyFile) ?></code>). Find imported playlists
+     under Content Setup &rarr; Playlists and the show run under Content Setup
+     &rarr; Scheduler. Pull also reports this box's sequence list to SET:IQ, so
+     its calendar can flag songs whose .fseq isn't here yet
+     (&ldquo;Sync with FPP&rdquo;).</p>
+ </div>
 </div>
