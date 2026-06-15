@@ -31,6 +31,8 @@ and the internet.
 | **Manual import** | Fallback for bridge-less setups: upload SET:IQ's exported `.json` playlists via FPP's File Manager, then one-click convert them into real playlists. |
 | **Live "now playing"** | While REQ:IQ is enabled, a lightweight listener (~5 s loop, started with fppd) heartbeats playback status to the cloud — your viewer page shows what's playing, live/offline, in real time. |
 | **Viewer requests** | The listener maintains a **REQIQ Requests** playlist from your catalog (only songs whose `.fseq` exists on the box) and executes request directives via FPP's `Insert Playlist After Current` / `Insert Playlist Immediate`, confirming back so the queue advances pending → playing → played. |
+| **Live transport control** | The REQ:IQ Live console drives the show like FPP itself can: **next / previous / restart / pause / stop** and a **volume** set. Each press rides the same heartbeat as a one-shot `command` directive; the listener runs the matching FPP command (`Next Playlist Item`, `Toggle Pause`, `Volume Set`, …). |
+| **Viewer announcements** | Fire a real-time banner to every open viewer page ("Turn your radio to 101.5", "Show paused — back in 5") from the console. These flow through the cloud over Realtime — the plugin doesn't need to do anything extra. |
 | **Idempotent** | Re-running either import path overwrites same-named playlists cleanly — re-pull whenever you change the season. |
 
 ## Install
@@ -89,6 +91,8 @@ its own, no database, no JavaScript framework). Everything talks `curl`:
 │  GET  /api/setiq/fpp/playlists?key=…   playlists + schedule    │
 │  POST /api/setiq/fpp/sync              {key, sequences[]}      │
 │  POST /api/reqiq/fpp/heartbeat         now playing → directives│
+│                                        (request inserts +      │
+│                                         transport commands)    │
 │  GET  /api/reqiq/fpp/playlist          requestable catalog     │
 │  POST /api/reqiq/fpp/mark              confirm request played  │
 └────────────────────────────────────────────────────────────────┘
@@ -100,6 +104,7 @@ its own, no database, no JavaScript framework). Everything talks `curl`:
 │  manage.php          bulk delete SET:IQ playlists              │
 │  reqiq.php           enable/disable viewer requests            │
 │  reqiq_listener.php  ~5 s loop: heartbeat + request inserts    │
+│                       + transport commands (next/pause/vol…)   │
 └────────────────────────────────────────────────────────────────┘
             │ create / read / insert                ▲
             ▼                                       │
@@ -112,6 +117,7 @@ its own, no database, no JavaScript framework). Everything talks `curl`:
 │  GET  /api/files/Uploads       list File Manager uploads       │
 │  GET  /api/system/status       what's playing now              │
 │  GET  /api/command/<insert…>   insert-playlist commands        │
+│  GET  /api/command/<transport>  next/prev/pause/stop/volume     │
 └────────────────────────────────────────────────────────────────┘
 ```
 
