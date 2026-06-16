@@ -11,6 +11,9 @@ $cfgDir  = (isset($settings['configDirectory']) && $settings['configDirectory'])
            ? $settings['configDirectory'] : '/home/fpp/media/config';
 $keyFile = "$cfgDir/$pluginName.key";
 $pullStatusFile = "$cfgDir/$pluginName.pull-status.json";
+// The operator's public REQ:IQ viewer link, refreshed from the cloud on
+// each pull. The REQ:IQ tab opens this so it points at <slug>.reqiq.net.
+$reqiqUrlFile = "$cfgDir/$pluginName.reqiq-url";
 
 $SETIQ_BASE = 'https://lightsofelmridge.com';
 
@@ -537,6 +540,16 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
     } elseif ($action !== 'sync' && $action !== 'import') {
         list($error, $data) = setiq_fetch_cloud($SETIQ_BASE, $key);
         if ($data) $showName = $data['show'] ?? '';
+        // Pull the operator's REQ:IQ link over with the playlists. Only
+        // replace the stored one when it actually changed.
+        if ($data && isset($data['reqiqUrl']) && is_string($data['reqiqUrl'])) {
+            $url = trim($data['reqiqUrl']);
+            if ($url !== '') {
+                $cur = file_exists($reqiqUrlFile)
+                     ? trim((string) file_get_contents($reqiqUrlFile)) : '';
+                if ($url !== $cur) @file_put_contents($reqiqUrlFile, $url);
+            }
+        }
     }
 
     if ($action === 'pull' && $data) {
