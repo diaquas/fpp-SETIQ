@@ -589,12 +589,21 @@ if (!is_array($pullStatus)) $pullStatus = null;
               your non-SET:IQ schedule entries are kept)</span>
       </label>
       <div class="iq-btnrow">
-        <button type="submit" class="buttons btn btn-success" name="action" value="pull">Pull from SET:IQ</button>
-        <button type="submit" class="buttons btn btn-default" name="action" value="check"
-                title="Compare every SET:IQ playlist against this box without changing anything">Check for updates</button>
         <button type="submit" class="buttons btn btn-default" name="action" value="sync"
-                title="Report this box's .fseq list (with runtimes + song titles) to SET:IQ without pulling playlists — SET:IQ can build your catalog from it or reconcile an existing plan">Sync sequence list only</button>
+                title="Report this box's .fseq list (with runtimes + song titles) to IQ Studio — it can build your catalog from these songs or reconcile an existing plan. Nothing on this FPP changes.">Push Sequence List to IQ Studio</button>
+        <button type="submit" class="buttons btn btn-success" name="action" value="pull"
+                title="Fetch every night's playlist from SET:IQ and create it on this box (and, with the box above checked, write the show schedule)">Pull Playlists and Schedules from SET:IQ</button>
+        <button type="submit" class="buttons btn btn-default" name="action" value="import"
+                title="Send this box's existing playlists + schedule up to SET:IQ for review — nothing on this FPP changes, and SET:IQ won't overwrite your season until you apply it in the editor">Push Playlists and Schedules to SET:IQ</button>
       </div>
+      <div class="iq-btnrow-sub">
+        <button type="submit" class="iq-linkbtn" name="action" value="check"
+                title="Compare every SET:IQ playlist against this box without changing anything — then pull individual playlists from the results">Check for updates</button>
+        <span class="iq-fine">Read-only — preview what's new or changed, then pull individual playlists without overwriting everything.</span>
+      </div>
+      <p class="iq-fine" style="margin-top:8px;max-width:780px">&ldquo;Push Playlists and Schedules to SET:IQ&rdquo; uploads a review copy of
+         this box's show; nothing on this FPP changes, and SET:IQ won't touch
+         your season until you apply it in the editor.</p>
     </form>
 
     <!-- right: last pull status panel -->
@@ -659,19 +668,6 @@ if (!is_array($pullStatus)) $pullStatus = null;
        Status compares the sequence/media lineup; FPP-computed durations are
        ignored.</p>
   <?php endif; ?>
-
-  <hr class="iq-divider">
-  <h3 class="iq-h3 iq-h3-sm">Already built your show in FPP?</h3>
-  <p class="iq-fine" style="max-width:780px;margin-bottom:12px">Send the
-     playlists and schedule you already have on this box <b>up to SET:IQ</b>, so
-     you can fine-tune the show there instead of in FPP. This only uploads a copy
-     for review — nothing on this FPP changes, and SET:IQ won't overwrite your
-     season until you apply the import in its editor.</p>
-  <form method="post" style="margin:0">
-    <input type="hidden" name="key" value="<?= htmlspecialchars($key) ?>">
-    <button type="submit" class="iq-btn-req-outline" name="action" value="import"
-            title="Read this box's playlists + schedule and send them to SET:IQ for review">Import current FPP show into SET:IQ</button>
-  </form>
 
   <p class="iq-fine" style="margin-top:22px">Your key is stored on this FPP only
      (<code><?= htmlspecialchars($keyFile) ?></code>). Find imported playlists
