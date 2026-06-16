@@ -52,3 +52,7 @@ if ($setiqTab === 'reqiq') {
 } else {
     include __DIR__ . '/pull.php';
 }
+
+// Loading overlay shown while any tab's form submits (pulls/pushes can take
+// up to a minute and otherwise leave the page blank).
+include __DIR__ . '/busy.inc.php';
