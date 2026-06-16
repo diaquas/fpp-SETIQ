@@ -353,11 +353,16 @@ while (true) {
     $playingName     = is_array($currentPlaylist) ? ($currentPlaylist['playlist'] ?? '') : '';
     $currentSeq      = $fpp['current_sequence'] ?? '';
     $isPlaying       = strtolower($fpp['status_name'] ?? '') === 'playing';
+    // FPP master volume (0–100). Reported back to the cloud so the REQ:IQ
+    // console slider mirrors volume changes made on the box itself.
+    $volume          = isset($fpp['volume']) ? (int) $fpp['volume'] : null;
 
     // Only beat when what the viewer sees changes, or the keepalive is due.
     // The keepalive also bounds how fast a queued transport directive is
-    // picked up, so it stays short.
-    $sig = ($isPlaying ? 'play' : 'stop') . '|' . $currentSeq . '|' . $playingName;
+    // picked up, so it stays short. Volume is in the signature so an FPP-side
+    // volume change pushes on the next tick rather than waiting for keepalive.
+    $sig = ($isPlaying ? 'play' : 'stop') . '|' . $currentSeq . '|' . $playingName
+         . '|' . ($volume === null ? '' : $volume);
     if ($sig === $lastSig && (time() - $lastBeat) < $INTERVAL) {
         sleep($POLL);
         continue;
@@ -379,6 +384,7 @@ while (true) {
             'seconds_remaining' => $fpp['seconds_remaining'] ?? 0,
             'playlist'          => $playingName,
             'upcoming'          => $upcoming,
+            'volume'            => $volume,
         ],
     ]);
 
