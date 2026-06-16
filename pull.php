@@ -114,75 +114,9 @@ function setiq_media_id3($mediaName) {
     return $out !== [] ? $out : null;
 }
 
-/** On-disk path to a sequence's .fseq, or null. */
-function setiq_fseq_path($mediaDir, $name) {
-    foreach (['sequences', 'Sequences'] as $sub) {
-        $p = "$mediaDir/$sub/$name";
-        if (is_file($p)) return $p;
-    }
-    return null;
-}
-
-/**
- * Per-sequence stats (lighting cues, top-3 colors, and run-length lit
- * channel ranges) computed on the box by scripts/fseq_stats.py from the
- * rendered .fseq. The box has no xLights layout (it lives in Studio IQ),
- * so prop attribution is NOT done here — the cloud reconciles the
- * `activity` runs against the uploaded layout. Cached by file signature
- * so unchanged sequences aren't re-scanned, with a wall-clock budget so a
- * first run on a big show never hangs the request — anything not reached
- * this time is picked up (and cached) on the next sync.
- */
-function setiq_collect_stats($names, $pluginDir, $cfgDir, $mediaDir) {
-    $script = "$pluginDir/scripts/fseq_stats.py";
-    if (!is_file($script)) return [];
-    $py = trim((string) @shell_exec('command -v python3'));
-    if ($py === '') return [];
-    $hasTimeout = trim((string) @shell_exec('command -v timeout')) !== '';
-
-    $cacheFile = "$cfgDir/fpp-SETIQ.stats-cache.json";
-    $cache = [];
-    if (is_file($cacheFile)) {
-        $j = json_decode((string) @file_get_contents($cacheFile), true);
-        if (is_array($j)) $cache = $j;
-    }
-
-    @set_time_limit(0);
-    $deadline = time() + 240; // total budget for fresh scans
-    $out = [];
-    $next = [];
-    foreach ($names as $name) {
-        $path = setiq_fseq_path($mediaDir, $name);
-        if ($path === null) continue;
-        $sig = @filemtime($path) . ':' . @filesize($path);
-
-        if (isset($cache[$name]['sig'], $cache[$name]['stats'])
-            && $cache[$name]['sig'] === $sig
-            && is_array($cache[$name]['stats'])) {
-            $next[$name] = $cache[$name];
-            if ($cache[$name]['stats']) $out[$name] = $cache[$name]['stats'];
-            continue;
-        }
-
-        if (time() >= $deadline) {
-            // Out of budget — keep any prior cache entry so we retry it next
-            // time, and stop scanning fresh sequences this round.
-            if (isset($cache[$name])) $next[$name] = $cache[$name];
-            continue;
-        }
-
-        $cmd = ($hasTimeout ? 'timeout 90 ' : '') . escapeshellarg($py) . ' '
-             . escapeshellarg($script) . ' --fseq ' . escapeshellarg($path)
-             . ' 2>/dev/null';
-        $json = @shell_exec($cmd);
-        $stats = $json ? json_decode(trim($json), true) : null;
-        if (!is_array($stats)) $stats = [];
-        $next[$name] = ['sig' => $sig, 'stats' => $stats];
-        if ($stats) $out[$name] = $stats;
-    }
-    @file_put_contents($cacheFile, json_encode($next));
-    return $out;
-}
+// setiq_fseq_path + setiq_collect_stats live in the shared collector so the
+// REQ:IQ listener daemon reuses the same scan + signature cache.
+require_once __DIR__ . '/fseq_collect.inc.php';
 
 /**
  * Report the on-box sequence list to SET:IQ so its calendar can lock

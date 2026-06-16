@@ -32,6 +32,9 @@ $INTERVAL           = 5;            // seconds between heartbeats (cloud may ove
 $PLAYLIST_REFRESH   = 6 * 3600;     // re-pull the requests playlist this often
 $SEQ_SYNC_INTERVAL  = 3600;         // re-report the on-box .fseq list this often
 
+// Shared per-sequence .fseq stats collector (also used by pull.php).
+require_once __DIR__ . '/fseq_collect.inc.php';
+
 // ── Helpers ───────────────────────────────────────────────────────────
 
 function rq_log($msg) {
@@ -211,7 +214,8 @@ function rq_media_id3($FPP, $mediaName) {
     return $out !== [] ? $out : null;
 }
 
-function rq_sync_sequences($CLOUD, $FPP, $key) {
+function rq_sync_sequences($CLOUD, $FPP, $key, $allowScan = true) {
+    global $cfgDir, $mediaDir;
     list($code, $data) = rq_get_json("$FPP/api/files/Sequences");
     if ($code !== 200 || !is_array($data)) return;
     $files = isset($data['files']) && is_array($data['files']) ? $data['files'] : $data;
@@ -242,11 +246,20 @@ function rq_sync_sequences($CLOUD, $FPP, $key) {
             }
         }
     }
+    // Per-sequence .fseq stats (lighting cues, top-3 colors, activity runs for
+    // the cloud's prop reconcile). Cached by file signature on the box, so this
+    // is cheap once warm; fresh scans are skipped while a show is playing
+    // ($allowScan false) and budget-bounded otherwise so they never stall the
+    // transport loop. A small budget warms the cache over a few syncs; a manual
+    // "Pull from SET:IQ" warms it all at once.
+    $stats = setiq_collect_stats($names, __DIR__, $cfgDir, $mediaDir, $allowScan ? 25 : 0);
+
     rq_post_json("$CLOUD/api/setiq/fpp/sync", [
         'key'       => $key,
         'sequences' => $names,
         'durations' => (object) $durations,
         'id3'       => (object) $id3,
+        'stats'     => (object) $stats,
     ]);
 }
 
@@ -335,12 +348,6 @@ while (true) {
         continue;
     }
 
-    // Periodically re-report the sequence list (cloud matches against it).
-    if (time() - $lastSeqSync > $SEQ_SYNC_INTERVAL) {
-        rq_sync_sequences($CLOUD, $FPP, $key);
-        $lastSeqSync = time();
-    }
-
     // 1. Local playback status (cheap localhost call, every tick).
     list($fppCode, $fpp) = rq_get_json("$FPP/api/system/status");
     if ($fppCode !== 200 || !is_array($fpp)) {
@@ -356,6 +363,14 @@ while (true) {
     // FPP master volume (0–100). Reported back to the cloud so the REQ:IQ
     // console slider mirrors volume changes made on the box itself.
     $volume          = isset($fpp['volume']) ? (int) $fpp['volume'] : null;
+
+    // Periodically re-report the sequence list + per-sequence .fseq stats.
+    // Runs after the status read so fresh stats scans are skipped while a show
+    // is playing — a first-time scan must never stall the transport loop.
+    if (time() - $lastSeqSync > $SEQ_SYNC_INTERVAL) {
+        rq_sync_sequences($CLOUD, $FPP, $key, !$isPlaying);
+        $lastSeqSync = time();
+    }
 
     // Only beat when what the viewer sees changes, or the keepalive is due.
     // The keepalive also bounds how fast a queued transport directive is
