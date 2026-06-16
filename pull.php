@@ -190,7 +190,7 @@ function setiq_collect_stats($names, $pluginDir, $cfgDir, $mediaDir) {
  * and ID3 tags ride along so the cloud can seed REQ:IQ catalog rows
  * with real lengths, titles and artists (standalone mode).
  */
-function setiq_sync_sequences($base, $key) {
+function setiq_sync_sequences($base, $key, $withStats = true) {
     $names = setiq_local_sequences();
     if ($names === null) return [false, 'could not read the local sequence list', 0];
     $durations = [];
@@ -203,10 +203,15 @@ function setiq_sync_sequences($base, $key) {
             if ($tags !== null) $id3[$name] = $tags;
         }
     }
-    // Per-sequence stats from the .fseq + layout (lighting cues, props,
-    // fave prop, top-3 colors), cached by file signature on the box.
-    global $cfgDir;
-    $stats = setiq_collect_stats($names, __DIR__, $cfgDir, dirname($cfgDir));
+    // Per-sequence stats from the .fseq (lighting cues, props, fave prop,
+    // top-3 colors), cached by file signature on the box. This is the heavy
+    // step — gated by the "Grab Key Metrics from FSEQ Files" toggle so a
+    // plain reconcile (names + runtimes + ID3) stays fast.
+    $stats = [];
+    if ($withStats) {
+        global $cfgDir;
+        $stats = setiq_collect_stats($names, __DIR__, $cfgDir, dirname($cfgDir));
+    }
 
     $payload = json_encode([
         'key'       => $key,
@@ -451,6 +456,9 @@ $action = $_POST['action'] ?? '';
 $pullOneName = isset($_POST['pullone']) && is_string($_POST['pullone'])
              ? trim($_POST['pullone']) : '';
 if ($pullOneName !== '') $action = 'pullone';
+// "Grab Key Metrics from FSEQ Files" — when on, the sequence reconcile runs
+// the heavy on-box .fseq parse for colors/key-moments/prop metrics.
+$withMetrics = !empty($_POST['metrics']);
 
 if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
     $data = null;
@@ -470,7 +478,7 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
             $results[] = [$name, $rc === 200 ? 'imported' : "FAILED (HTTP $rc)"];
         }
         // Report what's on the box so SET:IQ can reconcile its calendar.
-        list($ok, $msg, $seqCount) = setiq_sync_sequences($SETIQ_BASE, $key);
+        list($ok, $msg, $seqCount) = setiq_sync_sequences($SETIQ_BASE, $key, $withMetrics);
         $syncMsg = ($ok ? 'Sequence list synced: ' : 'Sequence sync skipped: ') . $msg;
         // Push the season schedule into FPP's scheduler so the full
         // show run exists, not just the playlists.
@@ -505,7 +513,7 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
     } elseif ($action === 'check' && $data) {
         $rows = setiq_compare_rows($data);
     } elseif ($action === 'sync' && !$error) {
-        list($ok, $msg) = setiq_sync_sequences($SETIQ_BASE, $key);
+        list($ok, $msg) = setiq_sync_sequences($SETIQ_BASE, $key, $withMetrics);
         if ($ok) {
             $syncMsg = "Sequence list synced: $msg. In SET:IQ, click "
                 . "\"Build catalog from FPP\" to start your show from these "
@@ -583,6 +591,12 @@ if (!is_array($pullStatus)) $pullStatus = null;
           <span class="iq-valid"><span class="iq-dot"></span>valid</span>
         <?php endif; ?>
       </div>
+      <label class="iq-check"
+             title="Grabs metrics (colors used; key moments; total props used; and top used prop) to showcase to your REQ:IQ audience.">
+        <input type="checkbox" name="metrics" value="1" <?= ($_SERVER['REQUEST_METHOD'] !== 'POST' || !empty($_POST['metrics'])) ? 'checked' : '' ?>>
+        <span>Grab Key Metrics from FSEQ Files
+              <span class="iq-help-dot" aria-hidden="true">?</span></span>
+      </label>
       <label class="iq-check">
         <input type="checkbox" name="schedule" value="1" <?= ($_SERVER['REQUEST_METHOD'] !== 'POST' || !empty($_POST['schedule'])) ? 'checked' : '' ?>>
         <span>Also update the FPP schedule (writes one entry per show night;
