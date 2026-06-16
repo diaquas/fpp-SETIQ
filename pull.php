@@ -114,21 +114,6 @@ function setiq_media_id3($mediaName) {
     return $out !== [] ? $out : null;
 }
 
-/** Locate the box's xLights layout files (for the per-prop stats), if
- *  present. Returns [rgbeffects, networks] absolute paths or nulls. */
-function setiq_layout_files($mediaDir) {
-    $rgb = null; $net = null;
-    foreach ([$mediaDir, "$mediaDir/upload"] as $dir) {
-        foreach (['xlights_rgbeffects.xml', 'rgbeffects.xml'] as $c) {
-            if ($rgb === null && is_file("$dir/$c")) $rgb = "$dir/$c";
-        }
-        foreach (['xlights_networks.xml', 'networks.xml'] as $c) {
-            if ($net === null && is_file("$dir/$c")) $net = "$dir/$c";
-        }
-    }
-    return [$rgb, $net];
-}
-
 /** On-disk path to a sequence's .fseq, or null. */
 function setiq_fseq_path($mediaDir, $name) {
     foreach (['sequences', 'Sequences'] as $sub) {
@@ -139,12 +124,14 @@ function setiq_fseq_path($mediaDir, $name) {
 }
 
 /**
- * Per-sequence stats (lighting cues, props, fave prop, top-3 colors)
- * computed on the box by scripts/fseq_stats.py from the rendered .fseq
- * (+ the layout, when present). Cached by file signature so unchanged
- * sequences aren't re-scanned, with a wall-clock budget so a first run
- * on a big show never hangs the request — anything not reached this time
- * is picked up (and cached) on the next sync.
+ * Per-sequence stats (lighting cues, top-3 colors, and run-length lit
+ * channel ranges) computed on the box by scripts/fseq_stats.py from the
+ * rendered .fseq. The box has no xLights layout (it lives in Studio IQ),
+ * so prop attribution is NOT done here — the cloud reconciles the
+ * `activity` runs against the uploaded layout. Cached by file signature
+ * so unchanged sequences aren't re-scanned, with a wall-clock budget so a
+ * first run on a big show never hangs the request — anything not reached
+ * this time is picked up (and cached) on the next sync.
  */
 function setiq_collect_stats($names, $pluginDir, $cfgDir, $mediaDir) {
     $script = "$pluginDir/scripts/fseq_stats.py";
@@ -152,10 +139,6 @@ function setiq_collect_stats($names, $pluginDir, $cfgDir, $mediaDir) {
     $py = trim((string) @shell_exec('command -v python3'));
     if ($py === '') return [];
     $hasTimeout = trim((string) @shell_exec('command -v timeout')) !== '';
-
-    list($rgb, $net) = setiq_layout_files($mediaDir);
-    $layoutSig = ($rgb ? (string) @filemtime($rgb) : '0')
-               . ':' . ($net ? (string) @filemtime($net) : '0');
 
     $cacheFile = "$cfgDir/fpp-SETIQ.stats-cache.json";
     $cache = [];
@@ -171,7 +154,7 @@ function setiq_collect_stats($names, $pluginDir, $cfgDir, $mediaDir) {
     foreach ($names as $name) {
         $path = setiq_fseq_path($mediaDir, $name);
         if ($path === null) continue;
-        $sig = @filemtime($path) . ':' . @filesize($path) . ':' . $layoutSig;
+        $sig = @filemtime($path) . ':' . @filesize($path);
 
         if (isset($cache[$name]['sig'], $cache[$name]['stats'])
             && $cache[$name]['sig'] === $sig
@@ -189,10 +172,8 @@ function setiq_collect_stats($names, $pluginDir, $cfgDir, $mediaDir) {
         }
 
         $cmd = ($hasTimeout ? 'timeout 90 ' : '') . escapeshellarg($py) . ' '
-             . escapeshellarg($script) . ' --fseq ' . escapeshellarg($path);
-        if ($rgb) $cmd .= ' --rgb ' . escapeshellarg($rgb);
-        if ($net) $cmd .= ' --net ' . escapeshellarg($net);
-        $cmd .= ' 2>/dev/null';
+             . escapeshellarg($script) . ' --fseq ' . escapeshellarg($path)
+             . ' 2>/dev/null';
         $json = @shell_exec($cmd);
         $stats = $json ? json_decode(trim($json), true) : null;
         if (!is_array($stats)) $stats = [];
