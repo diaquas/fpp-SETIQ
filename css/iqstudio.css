@@ -216,6 +216,20 @@
   max-width: 560px;
 }
 .iq-check input { margin-top: 3px; accent-color: var(--iq-set); }
+.iq-help-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  margin-left: 5px;
+  border-radius: 50%;
+  font: 700 10px system-ui, -apple-system, sans-serif;
+  background: rgba(128, 128, 128, 0.2);
+  color: var(--iq-card-text);
+  vertical-align: middle;
+  cursor: help;
+}
 .iq-btnrow { display: flex; gap: 10px; flex-wrap: wrap; }
 /* Demoted secondary action (e.g. read-only "Check for updates"). */
 .iq-btnrow-sub {
