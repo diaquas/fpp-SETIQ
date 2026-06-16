@@ -11,6 +11,9 @@ $cfgDir  = (isset($settings['configDirectory']) && $settings['configDirectory'])
            ? $settings['configDirectory'] : '/home/fpp/media/config';
 $keyFile = "$cfgDir/$pluginName.key";
 $pullStatusFile = "$cfgDir/$pluginName.pull-status.json";
+// The operator's public REQ:IQ viewer link, refreshed from the cloud on
+// each pull. The REQ:IQ tab opens this so it points at <slug>.reqiq.net.
+$reqiqUrlFile = "$cfgDir/$pluginName.reqiq-url";
 
 $SETIQ_BASE = 'https://lightsofelmridge.com';
 
@@ -114,8 +117,8 @@ function setiq_media_id3($mediaName) {
     return $out !== [] ? $out : null;
 }
 
-// setiq_fseq_path + setiq_collect_stats live in the shared collector so the
-// REQ:IQ listener daemon reuses the same scan + signature cache.
+// setiq_fseq_path + setiq_collect_stats (parallel scan + signature cache)
+// live in the shared collector so the REQ:IQ listener daemon reuses them.
 require_once __DIR__ . '/fseq_collect.inc.php';
 
 /**
@@ -124,7 +127,7 @@ require_once __DIR__ . '/fseq_collect.inc.php';
  * and ID3 tags ride along so the cloud can seed REQ:IQ catalog rows
  * with real lengths, titles and artists (standalone mode).
  */
-function setiq_sync_sequences($base, $key) {
+function setiq_sync_sequences($base, $key, $withStats = true) {
     $names = setiq_local_sequences();
     if ($names === null) return [false, 'could not read the local sequence list', 0];
     $durations = [];
@@ -137,10 +140,15 @@ function setiq_sync_sequences($base, $key) {
             if ($tags !== null) $id3[$name] = $tags;
         }
     }
-    // Per-sequence stats from the .fseq + layout (lighting cues, props,
-    // fave prop, top-3 colors), cached by file signature on the box.
-    global $cfgDir;
-    $stats = setiq_collect_stats($names, __DIR__, $cfgDir, dirname($cfgDir));
+    // Per-sequence stats from the .fseq (lighting cues, props, fave prop,
+    // top-3 colors), cached by file signature on the box. This is the heavy
+    // step — gated by the "Grab Key Metrics from FSEQ Files" toggle so a
+    // plain reconcile (names + runtimes + ID3) stays fast.
+    $stats = [];
+    if ($withStats) {
+        global $cfgDir;
+        $stats = setiq_collect_stats($names, __DIR__, $cfgDir, dirname($cfgDir));
+    }
 
     $payload = json_encode([
         'key'       => $key,
@@ -385,6 +393,9 @@ $action = $_POST['action'] ?? '';
 $pullOneName = isset($_POST['pullone']) && is_string($_POST['pullone'])
              ? trim($_POST['pullone']) : '';
 if ($pullOneName !== '') $action = 'pullone';
+// "Grab Key Metrics from FSEQ Files" — when on, the sequence reconcile runs
+// the heavy on-box .fseq parse for colors/key-moments/prop metrics.
+$withMetrics = !empty($_POST['metrics']);
 
 if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
     $data = null;
@@ -393,6 +404,16 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
     } elseif ($action !== 'sync' && $action !== 'import') {
         list($error, $data) = setiq_fetch_cloud($SETIQ_BASE, $key);
         if ($data) $showName = $data['show'] ?? '';
+        // Pull the operator's REQ:IQ link over with the playlists. Only
+        // replace the stored one when it actually changed.
+        if ($data && isset($data['reqiqUrl']) && is_string($data['reqiqUrl'])) {
+            $url = trim($data['reqiqUrl']);
+            if ($url !== '') {
+                $cur = file_exists($reqiqUrlFile)
+                     ? trim((string) file_get_contents($reqiqUrlFile)) : '';
+                if ($url !== $cur) @file_put_contents($reqiqUrlFile, $url);
+            }
+        }
     }
 
     if ($action === 'pull' && $data) {
@@ -404,7 +425,7 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
             $results[] = [$name, $rc === 200 ? 'imported' : "FAILED (HTTP $rc)"];
         }
         // Report what's on the box so SET:IQ can reconcile its calendar.
-        list($ok, $msg, $seqCount) = setiq_sync_sequences($SETIQ_BASE, $key);
+        list($ok, $msg, $seqCount) = setiq_sync_sequences($SETIQ_BASE, $key, $withMetrics);
         $syncMsg = ($ok ? 'Sequence list synced: ' : 'Sequence sync skipped: ') . $msg;
         // Push the season schedule into FPP's scheduler so the full
         // show run exists, not just the playlists.
@@ -439,7 +460,7 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
     } elseif ($action === 'check' && $data) {
         $rows = setiq_compare_rows($data);
     } elseif ($action === 'sync' && !$error) {
-        list($ok, $msg) = setiq_sync_sequences($SETIQ_BASE, $key);
+        list($ok, $msg) = setiq_sync_sequences($SETIQ_BASE, $key, $withMetrics);
         if ($ok) {
             $syncMsg = "Sequence list synced: $msg. In SET:IQ, click "
                 . "\"Build catalog from FPP\" to start your show from these "
@@ -517,18 +538,33 @@ if (!is_array($pullStatus)) $pullStatus = null;
           <span class="iq-valid"><span class="iq-dot"></span>valid</span>
         <?php endif; ?>
       </div>
+      <label class="iq-check"
+             title="Grabs metrics (colors used; key moments; total props used; and top used prop) to showcase to your REQ:IQ audience.">
+        <input type="checkbox" name="metrics" value="1" <?= ($_SERVER['REQUEST_METHOD'] !== 'POST' || !empty($_POST['metrics'])) ? 'checked' : '' ?>>
+        <span>Grab Key Metrics from FSEQ Files
+              <span class="iq-help-dot" aria-hidden="true">?</span></span>
+      </label>
       <label class="iq-check">
         <input type="checkbox" name="schedule" value="1" <?= ($_SERVER['REQUEST_METHOD'] !== 'POST' || !empty($_POST['schedule'])) ? 'checked' : '' ?>>
         <span>Also update the FPP schedule (writes one entry per show night;
               your non-SET:IQ schedule entries are kept)</span>
       </label>
       <div class="iq-btnrow">
-        <button type="submit" class="buttons btn btn-success" name="action" value="pull">Pull from SET:IQ</button>
-        <button type="submit" class="buttons btn btn-default" name="action" value="check"
-                title="Compare every SET:IQ playlist against this box without changing anything">Check for updates</button>
         <button type="submit" class="buttons btn btn-default" name="action" value="sync"
-                title="Report this box's .fseq list (with runtimes + song titles) to SET:IQ without pulling playlists — SET:IQ can build your catalog from it or reconcile an existing plan">Sync sequence list only</button>
+                title="Report this box's .fseq list (with runtimes + song titles) to IQ Studio — it can build your catalog from these songs or reconcile an existing plan. Nothing on this FPP changes.">Push Sequence List to IQ Studio</button>
+        <button type="submit" class="buttons btn btn-success" name="action" value="pull"
+                title="Fetch every night's playlist from SET:IQ and create it on this box (and, with the box above checked, write the show schedule)">Pull Playlists and Schedules from SET:IQ</button>
+        <button type="submit" class="buttons btn btn-default" name="action" value="import"
+                title="Send this box's existing playlists + schedule up to SET:IQ for review — nothing on this FPP changes, and SET:IQ won't overwrite your season until you apply it in the editor">Push Playlists and Schedules to SET:IQ</button>
       </div>
+      <div class="iq-btnrow-sub">
+        <button type="submit" class="iq-linkbtn" name="action" value="check"
+                title="Compare every SET:IQ playlist against this box without changing anything — then pull individual playlists from the results">Check for updates</button>
+        <span class="iq-fine">Read-only — preview what's new or changed, then pull individual playlists without overwriting everything.</span>
+      </div>
+      <p class="iq-fine" style="margin-top:8px;max-width:780px">&ldquo;Push Playlists and Schedules to SET:IQ&rdquo; uploads a review copy of
+         this box's show; nothing on this FPP changes, and SET:IQ won't touch
+         your season until you apply it in the editor.</p>
     </form>
 
     <!-- right: last pull status panel -->
@@ -593,19 +629,6 @@ if (!is_array($pullStatus)) $pullStatus = null;
        Status compares the sequence/media lineup; FPP-computed durations are
        ignored.</p>
   <?php endif; ?>
-
-  <hr class="iq-divider">
-  <h3 class="iq-h3 iq-h3-sm">Already built your show in FPP?</h3>
-  <p class="iq-fine" style="max-width:780px;margin-bottom:12px">Send the
-     playlists and schedule you already have on this box <b>up to SET:IQ</b>, so
-     you can fine-tune the show there instead of in FPP. This only uploads a copy
-     for review — nothing on this FPP changes, and SET:IQ won't overwrite your
-     season until you apply the import in its editor.</p>
-  <form method="post" style="margin:0">
-    <input type="hidden" name="key" value="<?= htmlspecialchars($key) ?>">
-    <button type="submit" class="iq-btn-req-outline" name="action" value="import"
-            title="Read this box's playlists + schedule and send them to SET:IQ for review">Import current FPP show into SET:IQ</button>
-  </form>
 
   <p class="iq-fine" style="margin-top:22px">Your key is stored on this FPP only
      (<code><?= htmlspecialchars($keyFile) ?></code>). Find imported playlists

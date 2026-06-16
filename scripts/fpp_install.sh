@@ -17,5 +17,21 @@ if [ -f "$FLAG" ] && grep -q '^enabled=1' "$FLAG"; then
     fi
 fi
 
+# Speed: scripts/fseq_stats.py has a fast numpy path and a much slower
+# pure-Python fallback. Install numpy if it's missing so sequence-stat
+# scans use the fast path. Best-effort — never fail the install over it.
+if command -v python3 > /dev/null 2>&1 && ! python3 -c 'import numpy' > /dev/null 2>&1; then
+    echo "Installing python3-numpy for faster sequence stats (best-effort)..."
+    if command -v apt-get > /dev/null 2>&1 \
+       && DEBIAN_FRONTEND=noninteractive apt-get install -y python3-numpy > /dev/null 2>&1; then
+        echo "numpy installed via apt."
+    elif command -v pip3 > /dev/null 2>&1 \
+         && pip3 install --break-system-packages numpy > /dev/null 2>&1; then
+        echo "numpy installed via pip."
+    else
+        echo "Couldn't auto-install numpy; stats will use the slower fallback."
+    fi
+fi
+
 echo "fpp-SETIQ installed. Open Content Setup -> SET:IQ / REQ:IQ."
 exit 0

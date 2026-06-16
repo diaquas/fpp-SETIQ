@@ -26,6 +26,7 @@ Usage: fseq_stats.py --fseq PATH [--samples N]
 
 import argparse
 import json
+import mmap
 import struct
 import sys
 import zlib
@@ -84,8 +85,18 @@ def _inflate(data):
 
 class Fseq:
     def __init__(self, path):
-        with open(path, "rb") as f:
-            self.buf = f.read()
+        # Memory-map instead of slurping the whole file: we only sample a
+        # few hundred frames, so on a large render this touches just the
+        # header + the blocks those samples land in (far less I/O and RAM,
+        # which also keeps parallel scans memory-safe). Falls back to a
+        # plain read for tiny/empty files mmap can't map.
+        self._f = open(path, "rb")
+        self._mm = None
+        try:
+            self._mm = mmap.mmap(self._f.fileno(), 0, access=mmap.ACCESS_READ)
+            self.buf = self._mm
+        except (ValueError, OSError):
+            self.buf = self._f.read()
         b = self.buf
         if len(b) < 8 or b[0:4] != b"PSEQ":
             raise FseqError("not a v2 PSEQ file")
@@ -133,6 +144,18 @@ class Fseq:
 
         self._cache_bi = -1
         self._cache_raw = None
+
+    def close(self):
+        if self._mm is not None:
+            try:
+                self._mm.close()
+            except (BufferError, ValueError):
+                pass
+            self._mm = None
+        try:
+            self._f.close()
+        except OSError:
+            pass
 
     def _decode_block(self, bi):
         _, off, length = self.blocks[bi]
@@ -297,23 +320,26 @@ def _compute_pure(fq, idxs):
 
 def compute(fseq_path, samples=DEFAULT_SAMPLES):
     fq = Fseq(fseq_path)
-    idxs = sample_indices(fq.frame_count, samples)
-    if not idxs:
-        return {}
     try:
+        idxs = sample_indices(fq.frame_count, samples)
+        if not idxs:
+            return {}
         try:
-            import numpy as np  # type: ignore
+            try:
+                import numpy as np  # type: ignore
 
-            litcount, colors, raw_changes = _compute_numpy(np, fq, idxs)
-        except ImportError:
-            litcount, colors, raw_changes = _compute_pure(fq, idxs)
-    except FseqError:
-        return {}  # couldn't decode frames (e.g. zstd) — skip cleanly
+                litcount, colors, raw_changes = _compute_numpy(np, fq, idxs)
+            except ImportError:
+                litcount, colors, raw_changes = _compute_pure(fq, idxs)
+        except FseqError:
+            return {}  # couldn't decode frames (e.g. zstd) — skip cleanly
 
-    stride = fq.frame_count / max(1, len(idxs))
-    cues = int(round(raw_changes * stride))
-    runs = _runs_from_litcount(litcount, fq.dense_len)
-    return {"cues": cues, "colors": colors, "activity": runs}
+        stride = fq.frame_count / max(1, len(idxs))
+        cues = int(round(raw_changes * stride))
+        runs = _runs_from_litcount(litcount, fq.dense_len)
+        return {"cues": cues, "colors": colors, "activity": runs}
+    finally:
+        fq.close()
 
 
 def main():

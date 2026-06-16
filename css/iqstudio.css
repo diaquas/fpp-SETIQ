@@ -216,7 +216,40 @@
   max-width: 560px;
 }
 .iq-check input { margin-top: 3px; accent-color: var(--iq-set); }
+.iq-help-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  margin-left: 5px;
+  border-radius: 50%;
+  font: 700 10px system-ui, -apple-system, sans-serif;
+  background: rgba(128, 128, 128, 0.2);
+  color: var(--iq-card-text);
+  vertical-align: middle;
+  cursor: help;
+}
 .iq-btnrow { display: flex; gap: 10px; flex-wrap: wrap; }
+/* Demoted secondary action (e.g. read-only "Check for updates"). */
+.iq-btnrow-sub {
+  display: flex;
+  align-items: baseline;
+  gap: 10px 12px;
+  flex-wrap: wrap;
+  margin-top: 11px;
+}
+.iq-linkbtn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: 600 13px system-ui, -apple-system, sans-serif;
+  color: var(--iq-set);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.iq-linkbtn:hover { filter: brightness(1.08); }
 
 /* ── Buttons (custom accents; the rest stay FPP btn classes) ── */
 .iq-btn-req,
