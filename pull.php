@@ -114,6 +114,95 @@ function setiq_media_id3($mediaName) {
     return $out !== [] ? $out : null;
 }
 
+/** Locate the box's xLights layout files (for the per-prop stats), if
+ *  present. Returns [rgbeffects, networks] absolute paths or nulls. */
+function setiq_layout_files($mediaDir) {
+    $rgb = null; $net = null;
+    foreach ([$mediaDir, "$mediaDir/upload"] as $dir) {
+        foreach (['xlights_rgbeffects.xml', 'rgbeffects.xml'] as $c) {
+            if ($rgb === null && is_file("$dir/$c")) $rgb = "$dir/$c";
+        }
+        foreach (['xlights_networks.xml', 'networks.xml'] as $c) {
+            if ($net === null && is_file("$dir/$c")) $net = "$dir/$c";
+        }
+    }
+    return [$rgb, $net];
+}
+
+/** On-disk path to a sequence's .fseq, or null. */
+function setiq_fseq_path($mediaDir, $name) {
+    foreach (['sequences', 'Sequences'] as $sub) {
+        $p = "$mediaDir/$sub/$name";
+        if (is_file($p)) return $p;
+    }
+    return null;
+}
+
+/**
+ * Per-sequence stats (lighting cues, props, fave prop, top-3 colors)
+ * computed on the box by scripts/fseq_stats.py from the rendered .fseq
+ * (+ the layout, when present). Cached by file signature so unchanged
+ * sequences aren't re-scanned, with a wall-clock budget so a first run
+ * on a big show never hangs the request — anything not reached this time
+ * is picked up (and cached) on the next sync.
+ */
+function setiq_collect_stats($names, $pluginDir, $cfgDir, $mediaDir) {
+    $script = "$pluginDir/scripts/fseq_stats.py";
+    if (!is_file($script)) return [];
+    $py = trim((string) @shell_exec('command -v python3'));
+    if ($py === '') return [];
+    $hasTimeout = trim((string) @shell_exec('command -v timeout')) !== '';
+
+    list($rgb, $net) = setiq_layout_files($mediaDir);
+    $layoutSig = ($rgb ? (string) @filemtime($rgb) : '0')
+               . ':' . ($net ? (string) @filemtime($net) : '0');
+
+    $cacheFile = "$cfgDir/fpp-SETIQ.stats-cache.json";
+    $cache = [];
+    if (is_file($cacheFile)) {
+        $j = json_decode((string) @file_get_contents($cacheFile), true);
+        if (is_array($j)) $cache = $j;
+    }
+
+    @set_time_limit(0);
+    $deadline = time() + 240; // total budget for fresh scans
+    $out = [];
+    $next = [];
+    foreach ($names as $name) {
+        $path = setiq_fseq_path($mediaDir, $name);
+        if ($path === null) continue;
+        $sig = @filemtime($path) . ':' . @filesize($path) . ':' . $layoutSig;
+
+        if (isset($cache[$name]['sig'], $cache[$name]['stats'])
+            && $cache[$name]['sig'] === $sig
+            && is_array($cache[$name]['stats'])) {
+            $next[$name] = $cache[$name];
+            if ($cache[$name]['stats']) $out[$name] = $cache[$name]['stats'];
+            continue;
+        }
+
+        if (time() >= $deadline) {
+            // Out of budget — keep any prior cache entry so we retry it next
+            // time, and stop scanning fresh sequences this round.
+            if (isset($cache[$name])) $next[$name] = $cache[$name];
+            continue;
+        }
+
+        $cmd = ($hasTimeout ? 'timeout 90 ' : '') . escapeshellarg($py) . ' '
+             . escapeshellarg($script) . ' --fseq ' . escapeshellarg($path);
+        if ($rgb) $cmd .= ' --rgb ' . escapeshellarg($rgb);
+        if ($net) $cmd .= ' --net ' . escapeshellarg($net);
+        $cmd .= ' 2>/dev/null';
+        $json = @shell_exec($cmd);
+        $stats = $json ? json_decode(trim($json), true) : null;
+        if (!is_array($stats)) $stats = [];
+        $next[$name] = ['sig' => $sig, 'stats' => $stats];
+        if ($stats) $out[$name] = $stats;
+    }
+    @file_put_contents($cacheFile, json_encode($next));
+    return $out;
+}
+
 /**
  * Report the on-box sequence list to SET:IQ so its calendar can lock
  * songs that aren't here yet ("Sync with FPP" reconcile). Durations
@@ -133,11 +222,17 @@ function setiq_sync_sequences($base, $key) {
             if ($tags !== null) $id3[$name] = $tags;
         }
     }
+    // Per-sequence stats from the .fseq + layout (lighting cues, props,
+    // fave prop, top-3 colors), cached by file signature on the box.
+    global $cfgDir;
+    $stats = setiq_collect_stats($names, __DIR__, $cfgDir, dirname($cfgDir));
+
     $payload = json_encode([
         'key'       => $key,
         'sequences' => $names,
         'durations' => (object) $durations,
         'id3'       => (object) $id3,
+        'stats'     => (object) $stats,
     ]);
     $ch = curl_init("$base/api/setiq/fpp/sync");
     curl_setopt_array($ch, [
