@@ -15,6 +15,7 @@ $cfgDir  = (isset($settings['configDirectory']) && $settings['configDirectory'])
 $keyFile    = "$cfgDir/$pluginName.key";
 $flagFile   = "$cfgDir/$pluginName.reqiq";
 $statusFile = "$cfgDir/$pluginName.reqiq-status.json";
+$reqiqUrlFile = "$cfgDir/$pluginName.reqiq-url";
 $pidFile    = "/tmp/$pluginName-reqiq.pid";
 $logFile    = "/home/fpp/media/logs/$pluginName-reqiq.log";
 
@@ -66,6 +67,11 @@ if ($enabled && !reqiq_pid($pidFile)) {
 }
 
 $pid    = reqiq_pid($pidFile);
+// The operator's own REQ:IQ viewer link (pulled from the cloud on each
+// SET:IQ pull). Falls back to the main site until the first pull lands one.
+$reqiqUrl = file_exists($reqiqUrlFile)
+          ? trim((string) file_get_contents($reqiqUrlFile)) : '';
+if ($reqiqUrl === '') $reqiqUrl = 'https://lightsofelmridge.com';
 $status = file_exists($statusFile) ? json_decode(file_get_contents($statusFile), true) : null;
 $logTail = file_exists($logFile)
          ? implode("", array_slice(file($logFile), -15)) : '';
@@ -137,7 +143,10 @@ $logTail = file_exists($logFile)
            and the request queue live on your <b>REQ:IQ viewer page</b> in the
            cloud. This listener relays them to FPP — there's nothing to operate
            here.</p>
-        <a href="https://lightsofelmridge.com" target="_blank" rel="noopener" class="iq-btn-req">Open REQ:IQ page ↗</a>
+        <a href="<?= htmlspecialchars($reqiqUrl) ?>" target="_blank" rel="noopener" class="iq-btn-req">Open REQ:IQ page ↗</a>
+        <div class="iq-fine" style="margin-top:8px">
+          <?= htmlspecialchars(preg_replace('#^https?://#', '', $reqiqUrl)) ?>
+        </div>
       </div>
       <?php if ($logTail): ?>
         <div class="iq-panel-title" style="margin:20px 0 10px">Recent log</div>
