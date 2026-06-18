@@ -328,7 +328,12 @@ def _pick_moments(fq, frame_lits, step_ms):
         fr = fq.frame(idx)
         moments.append(
             {
-                "t_ms": int(b * MOMENT_BUCKET_MS),
+                # Timestamp the ACTUAL busiest frame the colors + activity come
+                # from (idx * step_ms), not the bucket's start second. The cloud
+                # carries this t_ms straight into the "watch for this" teaser, so
+                # the timecode must land exactly when these colors hit — stamping
+                # the bucket start put the callout up to a second early.
+                "t_ms": int(idx * step_ms),
                 "colors": _frame_top_colors(fr),
                 "activity": _frame_runs(fr),
             }

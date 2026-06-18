@@ -195,6 +195,32 @@ def main():
             check("numpy/pure per-frame lit counts agree", np_fl == pu_fl)
             print("ok (numpy == pure):", np_colors)
 
+        # ── Moment timing: t_ms marks the busiest FRAME, not the bucket start ──
+        # step 50ms → 20 frames/sec. ch0 is lit every frame (baseline); frame 25
+        # (t=1250ms, inside the 2nd one-second bucket) lights all channels, so
+        # it's the busiest frame. The emitted moment must be stamped 1250ms (when
+        # the colors actually hit), not 1000ms (the bucket's start second).
+        C2 = 6
+        frames2 = []
+        for i in range(30):
+            fr = bytearray(C2)
+            fr[0] = 200  # baseline: one channel lit every frame
+            if i == 25:
+                for c in range(C2):
+                    fr[c] = 200  # busiest frame, mid-bucket
+            frames2.append(fr)
+        tpath = os.path.join(d, "Timing.fseq")
+        build_fseq(tpath, C2, frames2)
+        st = fs.compute(tpath)
+        tm = st.get("moments")
+        check("timing moments present", isinstance(tm, list) and len(tm) >= 1)
+        peak = max(tm, key=lambda m: sum(w for _, _, w in m["activity"]))
+        check(
+            "moment t_ms marks the busiest frame (1250ms), not the bucket start",
+            peak["t_ms"] == 1250,
+        )
+        print("ok (moment timing):", [m["t_ms"] for m in tm])
+
     print("\nALL PASS")
 
 
