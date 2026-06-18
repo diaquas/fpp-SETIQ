@@ -221,6 +221,21 @@ def main():
         )
         print("ok (moment timing):", [m["t_ms"] for m in tm])
 
+        # ── Activity cap must COARSEN, not drop, so a fragmented matrix can't
+        # crowd out a discrete prop's run (the root of the props=5 bug) ──
+        dense3 = 30000
+        lit3 = [0] * dense3
+        lit3[10] = 1  # a lone discrete prop, far from the matrix
+        # A "matrix" that fragments into > MAX_RUNS separate runs: lit pixels
+        # spaced 5 apart leave a 4-channel (>GAP) dark gap between each.
+        for c in range(1000, 1000 + (fs.MAX_RUNS + 50) * 5, 5):
+            lit3[c] = 1
+        bounded = fs._bounded_runs(lit3, dense3)
+        check("bounded run count under MAX_RUNS", len(bounded) <= fs.MAX_RUNS)
+        covered = any(s <= 10 < s + ln for s, ln, _ in bounded)
+        check("discrete prop survives the cap (props=5 fix)", covered)
+        print("ok (activity coarsening):", len(bounded), "runs")
+
     print("\nALL PASS")
 
 
