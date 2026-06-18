@@ -129,6 +129,23 @@ def main():
         # Total weight ~= lit-frame-count sum: Tree 10 + Arch 3 = 13.
         total_w = sum(w for _, _, w in runs)
         check("total weight ~= lit frames", 10 <= total_w <= 16)
+
+        # Key moments: this 10-frame fixture is one ~1s window, so one moment
+        # at t=0 carrying the window's colors + its lit-channel runs.
+        moments = s.get("moments")
+        check("moments present", isinstance(moments, list) and len(moments) >= 1)
+        m0 = moments[0]
+        check("moment t_ms is 0", m0.get("t_ms") == 0)
+        check("moment has colors", bool(m0.get("colors")))
+        mr = m0.get("activity")
+        check("moment activity present", isinstance(mr, list) and len(mr) >= 1)
+        moment_channels = set()
+        for start, length, w in mr:
+            check("moment run weight positive", w > 0)
+            for c in range(start, start + length):
+                moment_channels.add(c)
+        check("moment covers ch0 (Tree)", 0 in moment_channels)
+        check("moment covers ch5 (Arch)", 5 in moment_channels)
         print("ok (uncompressed):", s)
 
         # Compression must not change the derived stats. Real renders are
@@ -167,14 +184,15 @@ def main():
         else:
             fq = fs.Fseq(zpath)
             idxs = fs.sample_indices(fq.frame_count, fs.DEFAULT_SAMPLES)
-            np_lit, np_colors, np_changes = fs._compute_numpy(np, fq, idxs)
+            np_lit, np_colors, np_changes, np_fl = fs._compute_numpy(np, fq, idxs)
             fq.close()
             fq = fs.Fseq(zpath)
-            pu_lit, pu_colors, pu_changes = fs._compute_pure(fq, idxs)
+            pu_lit, pu_colors, pu_changes, pu_fl = fs._compute_pure(fq, idxs)
             fq.close()
             check("numpy/pure litcount agree", np_lit == pu_lit)
             check("numpy/pure colors agree", np_colors == pu_colors)
             check("numpy/pure change count agrees", np_changes == pu_changes)
+            check("numpy/pure per-frame lit counts agree", np_fl == pu_fl)
             print("ok (numpy == pure):", np_colors)
 
     print("\nALL PASS")

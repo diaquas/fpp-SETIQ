@@ -10,11 +10,19 @@ supports, and hands the raw material for prop attribution up to the cloud:
     {
       "cues":   int,                 # significant per-channel changes (index)
       "colors": ["#rrggbb", ...],    # top-3 most-used colors, most-used first
-      "activity": [[start, len, w]]  # run-length lit-channel ranges + weight
+      "activity": [[start, len, w]], # run-length lit-channel ranges + weight
+      "moments": [                   # top key windows for the "hype moment"
+        {"t_ms": int, "colors": ["#rrggbb", ...],
+         "activity": [[start, len, w], ...]}
+      ]
     }
 
 Studio IQ reconciles `activity` against the uploaded layout's model→channel
-ranges to derive props + fave prop, order-independently, once both land.
+ranges to derive props + fave prop, order-independently, once both land. Each
+moment's per-window `activity` reconciles the same way into that window's
+props_lit, so the cloud can build real sequence-moment anchors (timestamp +
+colors + prop count) for the AI "watch for this" teaser without the .fseq
+ever leaving the box.
 
 cues + colors + activity all come from the render alone. Frames are
 sampled; numpy is used when present (fast on a Pi), with a pure-stdlib
@@ -40,6 +48,10 @@ DEFAULT_SAMPLES = 200
 COLOR_BITS = 4    # quantize each RGB component to this many high bits
 GAP = 3           # merge lit runs separated by <= this many dark channels
 MAX_RUNS = 4000   # cap the activity payload (keep the most-active runs)
+MOMENT_BUCKET_MS = 1000  # window size for "key moments"
+MAX_MOMENTS = 3          # how many key moments to emit
+MOMENT_SPREAD = 3        # keep picked moments >= this many buckets apart
+MOMENT_COLORS = 3        # top colors per moment
 
 
 class FseqError(Exception):
@@ -250,6 +262,75 @@ def _runs_from_litcount(litcount, dense_len):
     return runs
 
 
+def _frame_top_colors(fr, top=MOMENT_COLORS):
+    """Top hex colors of a single frame (lit RGB triples), most-used first."""
+    shift = 8 - COLOR_BITS
+    color_w = {}
+    n = (len(fr) // 3) * 3
+    for c in range(0, n, 3):
+        r, g, b = fr[c], fr[c + 1], fr[c + 2]
+        if r < LIT and g < LIT and b < LIT:
+            continue
+        key = ((r >> shift) << (2 * COLOR_BITS)) | ((g >> shift) << COLOR_BITS) | (
+            b >> shift
+        )
+        color_w[key] = color_w.get(key, 0) + (r + g + b)
+    ranked = sorted(color_w.items(), key=lambda kv: kv[1], reverse=True)[:top]
+    return [_decode_color_key(k) for k, _ in ranked]
+
+
+def _frame_runs(fr):
+    """Lit-channel runs of a single frame, same [start, len, w] shape as the
+    aggregate activity so the cloud reconciles a moment's window the same way."""
+    dense = len(fr)
+    litcount = [1 if fr[c] >= LIT else 0 for c in range(dense)]
+    return _runs_from_litcount(litcount, dense)
+
+
+def _pick_moments(fq, frame_lits, step_ms):
+    """Pick the top key windows for the hype moment from the sampled frames.
+
+    Buckets sampled frames into MOMENT_BUCKET_MS windows, scores each window by
+    its busiest sampled frame (most lit channels), keeps the top MAX_MOMENTS
+    spread >= MOMENT_SPREAD buckets apart, then emits each window's timestamp,
+    dominant colors and per-window lit-channel runs (for the cloud to reconcile
+    into props_lit). Returns [] when nothing is lit."""
+    if step_ms <= 0:
+        return []
+    buckets = {}  # bucket -> (lit, frame index of the busiest sampled frame)
+    for idx, lit in frame_lits:
+        if lit <= 0:
+            continue
+        b = (idx * step_ms) // MOMENT_BUCKET_MS
+        cur = buckets.get(b)
+        if cur is None or lit > cur[0]:
+            buckets[b] = (lit, idx)
+    if not buckets:
+        return []
+
+    scored = sorted(buckets.items(), key=lambda kv: (-kv[1][0], kv[0]))
+    picked = []  # (bucket, frame index)
+    for b, (lit, idx) in scored:
+        if len(picked) >= MAX_MOMENTS:
+            break
+        if any(abs(pb - b) < MOMENT_SPREAD for pb, _ in picked):
+            continue
+        picked.append((b, idx))
+    picked.sort(key=lambda p: p[0])
+
+    moments = []
+    for b, idx in picked:
+        fr = fq.frame(idx)
+        moments.append(
+            {
+                "t_ms": int(b * MOMENT_BUCKET_MS),
+                "colors": _frame_top_colors(fr),
+                "activity": _frame_runs(fr),
+            }
+        )
+    return moments
+
+
 # ── numpy fast path ───────────────────────────────────────────────────
 
 
@@ -260,10 +341,13 @@ def _compute_numpy(np, fq, idxs):
     nkeys = 1 << (3 * COLOR_BITS)
     color_w = np.zeros(nkeys, dtype=np.float64)
     raw_changes = 0
+    frame_lits = []  # (frame index, lit-channel count) per sampled frame
     prev = None
     for i in idxs:
         fr = np.frombuffer(fq.frame(i), dtype=np.uint8)
-        litcount[: fr.shape[0]] += (fr >= LIT).astype(np.uint32)
+        lit_mask = fr >= LIT
+        litcount[: fr.shape[0]] += lit_mask.astype(np.uint32)
+        frame_lits.append((i, int(lit_mask.sum())))
         m = (fr.shape[0] // 3) * 3
         if m:
             tri = fr[:m].reshape(-1, 3).astype(np.uint16)
@@ -283,7 +367,7 @@ def _compute_numpy(np, fq, idxs):
         prev = fr
     top = np.argsort(color_w)[::-1]
     colors = [_decode_color_key(int(k)) for k in top[:3] if color_w[int(k)] > 0]
-    return litcount.tolist(), colors, raw_changes
+    return litcount.tolist(), colors, raw_changes, frame_lits
 
 
 # ── pure-stdlib fallback ──────────────────────────────────────────────
@@ -295,13 +379,17 @@ def _compute_pure(fq, idxs):
     litcount = [0] * dense
     color_w = {}
     raw_changes = 0
+    frame_lits = []  # (frame index, lit-channel count) per sampled frame
     prev = None
     for i in idxs:
         fr = fq.frame(i)
         n = min(dense, len(fr))
+        fl = 0
         for c in range(n):
             if fr[c] >= LIT:
                 litcount[c] += 1
+                fl += 1
+        frame_lits.append((i, fl))
         for c in range(0, n - 2, 3):
             r, g, b = fr[c], fr[c + 1], fr[c + 2]
             if r < LIT and g < LIT and b < LIT:
@@ -318,7 +406,7 @@ def _compute_pure(fq, idxs):
         prev = fr
     top = sorted(color_w.items(), key=lambda kv: kv[1], reverse=True)[:3]
     colors = [_decode_color_key(k) for k, _ in top]
-    return litcount, colors, raw_changes
+    return litcount, colors, raw_changes, frame_lits
 
 
 def compute(fseq_path, samples=DEFAULT_SAMPLES):
@@ -339,9 +427,11 @@ def compute(fseq_path, samples=DEFAULT_SAMPLES):
             try:
                 import numpy as np  # type: ignore
 
-                litcount, colors, raw_changes = _compute_numpy(np, fq, idxs)
+                litcount, colors, raw_changes, frame_lits = _compute_numpy(
+                    np, fq, idxs
+                )
             except ImportError:
-                litcount, colors, raw_changes = _compute_pure(fq, idxs)
+                litcount, colors, raw_changes, frame_lits = _compute_pure(fq, idxs)
         except FseqError as e:
             # No decoder for this compression (e.g. zstd), or a bad block.
             return {"error": str(e) or "could not decode frames"}
@@ -351,7 +441,13 @@ def compute(fseq_path, samples=DEFAULT_SAMPLES):
         stride = fq.frame_count / max(1, len(idxs))
         cues = int(round(raw_changes * stride))
         runs = _runs_from_litcount(litcount, fq.dense_len)
-        return {"cues": cues, "colors": colors, "activity": runs}
+        moments = _pick_moments(fq, frame_lits, fq.step_ms)
+        return {
+            "cues": cues,
+            "colors": colors,
+            "activity": runs,
+            "moments": moments,
+        }
     finally:
         fq.close()
 
