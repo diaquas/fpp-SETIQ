@@ -238,8 +238,8 @@ def _decode_color_key(key):
     return "#%02x%02x%02x" % (rr, gg, bb)
 
 
-def _runs_from_litcount(litcount, dense_len):
-    """RLE contiguous lit channels (merging <=GAP dark gaps) -> [start,len,w]."""
+def _runs_from_litcount(litcount, dense_len, gap=GAP):
+    """RLE contiguous lit channels (merging <=gap dark gaps) -> [start,len,w]."""
     runs = []
     i = 0
     while i < dense_len:
@@ -247,7 +247,7 @@ def _runs_from_litcount(litcount, dense_len):
             start = i
             last_lit = i
             weight = 0
-            while i < dense_len and (litcount[i] > 0 or i - last_lit <= GAP):
+            while i < dense_len and (litcount[i] > 0 or i - last_lit <= gap):
                 if litcount[i] > 0:
                     last_lit = i
                     weight += int(litcount[i])
@@ -255,10 +255,29 @@ def _runs_from_litcount(litcount, dense_len):
             runs.append([start, last_lit - start + 1, weight])
         else:
             i += 1
-    if len(runs) > MAX_RUNS:
-        runs.sort(key=lambda r: r[2], reverse=True)
-        runs = runs[:MAX_RUNS]
-        runs.sort(key=lambda r: r[0])
+    return runs
+
+
+def _bounded_runs(litcount, dense_len):
+    """Lit-channel runs kept under MAX_RUNS by COARSENING (a larger merge gap),
+    never by dropping runs.
+
+    The old cap kept the top-MAX_RUNS runs by weight and discarded the rest. But
+    one huge model — a P5 matrix can be ~75% of the channel space — fragments
+    into thousands of high-weight runs that crowd out every discrete prop's
+    lower-weight run, so the cloud saw only the matrix lit and reported ~5 props.
+    Coarsening instead grows the dark-gap tolerance until the run count fits:
+    every lit channel stays inside some run, so every lit model is still
+    represented. A few unlit channels swallowed into a merged span is a far
+    better error than silently losing 145 props."""
+    gap = GAP
+    runs = _runs_from_litcount(litcount, dense_len, gap)
+    while len(runs) > MAX_RUNS and gap < dense_len:
+        gap *= 8
+        runs = _runs_from_litcount(litcount, dense_len, gap)
+    if len(runs) > MAX_RUNS:  # pathological fallback — uniform trim by position
+        step = len(runs) / MAX_RUNS
+        runs = [runs[int(k * step)] for k in range(MAX_RUNS)]
     return runs
 
 
@@ -286,10 +305,12 @@ def _frame_top_colors(fr, top=MOMENT_COLORS):
 
 def _frame_runs(fr):
     """Lit-channel runs of a single frame, same [start, len, w] shape as the
-    aggregate activity so the cloud reconciles a moment's window the same way."""
+    aggregate activity so the cloud reconciles a moment's window the same way.
+    Bounded the same way too, so a busy matrix frame can't crowd out the props
+    in a moment's per-window props_lit."""
     dense = len(fr)
     litcount = [1 if fr[c] >= LIT else 0 for c in range(dense)]
-    return _runs_from_litcount(litcount, dense)
+    return _bounded_runs(litcount, dense)
 
 
 def _pick_moments(fq, frame_lits, step_ms):
@@ -453,7 +474,7 @@ def compute(fseq_path, samples=DEFAULT_SAMPLES):
 
         stride = fq.frame_count / max(1, len(idxs))
         cues = int(round(raw_changes * stride))
-        runs = _runs_from_litcount(litcount, fq.dense_len)
+        runs = _bounded_runs(litcount, fq.dense_len)
         moments = _pick_moments(fq, frame_lits, fq.step_ms)
         return {
             "cues": cues,
