@@ -263,7 +263,12 @@ def _runs_from_litcount(litcount, dense_len):
 
 
 def _frame_top_colors(fr, top=MOMENT_COLORS):
-    """Top hex colors of a single frame (lit RGB triples), most-used first."""
+    """Top hex colors of a single frame, most-USED first.
+
+    Ranked by how many lit pixels carry each (quantized) color — frequency, not
+    brightness. Summing r+g+b instead made white/near-white win every time
+    (765 per pixel) over the show's actual saturated colors; counting pixels
+    surfaces the colors that genuinely cover the most of the display."""
     shift = 8 - COLOR_BITS
     color_w = {}
     n = (len(fr) // 3) * 3
@@ -274,7 +279,7 @@ def _frame_top_colors(fr, top=MOMENT_COLORS):
         key = ((r >> shift) << (2 * COLOR_BITS)) | ((g >> shift) << COLOR_BITS) | (
             b >> shift
         )
-        color_w[key] = color_w.get(key, 0) + (r + g + b)
+        color_w[key] = color_w.get(key, 0) + 1
     ranked = sorted(color_w.items(), key=lambda kv: kv[1], reverse=True)[:top]
     return [_decode_color_key(k) for k, _ in ranked]
 
@@ -356,9 +361,10 @@ def _compute_numpy(np, fq, idxs):
             if sel.shape[0]:
                 q = (sel >> shift).astype(np.int64)
                 keys = (q[:, 0] << (2 * COLOR_BITS)) | (q[:, 1] << COLOR_BITS) | q[:, 2]
-                color_w += np.bincount(
-                    keys, weights=sel.sum(axis=1), minlength=nkeys
-                )
+                # Frequency (count of lit pixels), not summed brightness — rank
+                # by the colors that cover the most of the display, so the show's
+                # actual hues win instead of white/near-white (see _frame_top_colors).
+                color_w += np.bincount(keys, minlength=nkeys)
         if prev is not None:
             n = min(fr.shape[0], prev.shape[0])
             raw_changes += int(
@@ -397,7 +403,9 @@ def _compute_pure(fq, idxs):
             key = ((r >> shift) << (2 * COLOR_BITS)) | ((g >> shift) << COLOR_BITS) | (
                 b >> shift
             )
-            color_w[key] = color_w.get(key, 0) + (r + g + b)
+            # Frequency (lit-pixel count), not summed brightness — see
+            # _frame_top_colors for why white/near-white must not auto-win.
+            color_w[key] = color_w.get(key, 0) + 1
         if prev is not None:
             m = min(len(fr), len(prev))
             for c in range(m):
