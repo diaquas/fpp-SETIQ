@@ -33,5 +33,24 @@ if command -v python3 > /dev/null 2>&1 && ! python3 -c 'import numpy' > /dev/nul
     fi
 fi
 
+# Decode: scripts/fseq_stats.py needs a zstd decoder (the `zstandard` Python
+# module OR the `zstd` CLI) to read zstd-compressed renders. xLights/FPP v2
+# renders default to zstd, so on a box with neither, EVERY sequence comes back
+# with no stats (cues/colors/props all blank). Install a decoder if missing.
+if command -v python3 > /dev/null 2>&1 \
+   && ! python3 -c 'import zstandard' > /dev/null 2>&1 \
+   && ! command -v zstd > /dev/null 2>&1; then
+    echo "Installing a zstd decoder for sequence stats (best-effort)..."
+    if command -v apt-get > /dev/null 2>&1 \
+       && DEBIAN_FRONTEND=noninteractive apt-get install -y zstd > /dev/null 2>&1; then
+        echo "zstd CLI installed via apt."
+    elif command -v pip3 > /dev/null 2>&1 \
+         && pip3 install --break-system-packages zstandard > /dev/null 2>&1; then
+        echo "zstandard installed via pip."
+    else
+        echo "Couldn't auto-install a zstd decoder; zstd-compressed sequences will report no stats."
+    fi
+fi
+
 echo "fpp-SETIQ installed. Open Content Setup -> SET:IQ / REQ:IQ."
 exit 0

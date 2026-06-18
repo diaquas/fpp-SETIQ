@@ -19,7 +19,10 @@ ranges to derive props + fave prop, order-independently, once both land.
 cues + colors + activity all come from the render alone. Frames are
 sampled; numpy is used when present (fast on a Pi), with a pure-stdlib
 fallback. none/zlib are stdlib; zstd needs the zstandard module or the
-zstd CLI, else frame stats are skipped (emits cleanly, never guesses).
+zstd CLI. If a render can't be decoded (commonly a zstd file on a box with
+no decoder), the tool emits an explicit {"error": "..."} marker instead of
+a silent {} — so the caller can surface "stats unavailable" and retry the
+file later (e.g. once a decoder is installed) rather than caching a blank.
 
 Usage: fseq_stats.py --fseq PATH [--samples N]
 """
@@ -319,11 +322,19 @@ def _compute_pure(fq, idxs):
 
 
 def compute(fseq_path, samples=DEFAULT_SAMPLES):
-    fq = Fseq(fseq_path)
+    # A scan either succeeds with real stats or returns an explicit
+    # {"error": ...} marker — never a silent empty {}. The caller uses the
+    # marker to surface "stats unavailable" and to retry (rather than cache)
+    # the file, so a box that later gains a zstd decoder self-heals. The most
+    # common failure is a zstd-compressed render on a box with no decoder.
+    try:
+        fq = Fseq(fseq_path)
+    except FseqError as e:
+        return {"error": str(e) or "not a readable .fseq"}
     try:
         idxs = sample_indices(fq.frame_count, samples)
         if not idxs:
-            return {}
+            return {"error": "no frames"}
         try:
             try:
                 import numpy as np  # type: ignore
@@ -331,8 +342,11 @@ def compute(fseq_path, samples=DEFAULT_SAMPLES):
                 litcount, colors, raw_changes = _compute_numpy(np, fq, idxs)
             except ImportError:
                 litcount, colors, raw_changes = _compute_pure(fq, idxs)
-        except FseqError:
-            return {}  # couldn't decode frames (e.g. zstd) — skip cleanly
+        except FseqError as e:
+            # No decoder for this compression (e.g. zstd), or a bad block.
+            return {"error": str(e) or "could not decode frames"}
+        except Exception as e:  # corrupt stream, bad compression payload, etc.
+            return {"error": "could not decode frames: %s" % type(e).__name__}
 
         stride = fq.frame_count / max(1, len(idxs))
         cues = int(round(raw_changes * stride))
@@ -349,8 +363,8 @@ def main():
     args = ap.parse_args()
     try:
         stats = compute(args.fseq, args.samples)
-    except (FseqError, OSError):
-        stats = {}
+    except OSError as e:
+        stats = {"error": "could not read file: %s" % type(e).__name__}
     sys.stdout.write(json.dumps(stats))
 
 
