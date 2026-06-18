@@ -147,8 +147,15 @@ if (!function_exists('setiq_collect_stats')) {
                 $json = trim($results[$name]);
                 $stats = $json !== '' ? json_decode($json, true) : null;
                 if (!is_array($stats)) $stats = [];
+                // A failed scan — an explicit {"error":...} marker, or no/garbled
+                // output — is NOT cached, so it's re-scanned next round instead of
+                // serving a blank forever. That way a box that later gains a zstd
+                // decoder (the common cause) self-heals on the next sync. The
+                // failing decode bails immediately, so retrying it is cheap.
+                $failed = !$stats || isset($stats['error']);
+                if ($failed) continue;
                 $next[$name] = ['sig' => $t['sig'], 'stats' => $stats];
-                if ($stats) $out[$name] = $stats;
+                $out[$name] = $stats;
             } elseif (isset($cache[$name])) {
                 // Didn't run this round (out of budget) — keep the old cache
                 // entry so it's retried next time.
