@@ -117,10 +117,6 @@ function setiq_media_id3($mediaName) {
     return $out !== [] ? $out : null;
 }
 
-// setiq_fseq_path + setiq_collect_stats (parallel scan + signature cache)
-// live in the shared collector so the REQ:IQ listener daemon reuses them.
-require_once __DIR__ . '/fseq_collect.inc.php';
-
 /**
  * Report the on-box sequence list to SET:IQ so its calendar can lock
  * songs that aren't here yet ("Sync with FPP" reconcile). Durations
@@ -387,17 +383,6 @@ $action = $_POST['action'] ?? '';
 $pullOneName = isset($_POST['pullone']) && is_string($_POST['pullone'])
              ? trim($_POST['pullone']) : '';
 if ($pullOneName !== '') $action = 'pullone';
-// "Grab Key Metrics from FSEQ Files" — opt-in for the fseq-derived catalog
-// stats (props, fave prop, palette, key moments). The heavy work no longer runs
-// during the sync; instead the REQ:IQ listener stages each render into the
-// cloud one at a time for the browser to decode. Persist the choice to a flag
-// file so that background daemon knows whether the operator wants it.
-$withMetrics = !empty($_POST['metrics']);
-$metricsFlagFile = "$cfgDir/$pluginName.metrics";
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action !== '') {
-    @file_put_contents($metricsFlagFile, $withMetrics ? "enabled=1\n" : "enabled=0\n");
-}
-
 if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
     $data = null;
     if ($key === '') {
@@ -539,12 +524,6 @@ if (!is_array($pullStatus)) $pullStatus = null;
           <span class="iq-valid"><span class="iq-dot"></span>valid</span>
         <?php endif; ?>
       </div>
-      <label class="iq-check"
-             title="Grabs metrics (colors used; key moments; total props used; and top used prop) to showcase to your REQ:IQ audience.">
-        <input type="checkbox" name="metrics" value="1" <?= ($_SERVER['REQUEST_METHOD'] !== 'POST' || !empty($_POST['metrics'])) ? 'checked' : '' ?>>
-        <span>Grab Key Metrics from FSEQ Files
-              <span class="iq-help-dot" aria-hidden="true">?</span></span>
-      </label>
       <label class="iq-check">
         <input type="checkbox" name="schedule" value="1" <?= ($_SERVER['REQUEST_METHOD'] !== 'POST' || !empty($_POST['schedule'])) ? 'checked' : '' ?>>
         <span>Also update the FPP schedule (writes one entry per show night;
