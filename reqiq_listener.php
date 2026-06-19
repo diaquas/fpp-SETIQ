@@ -305,11 +305,15 @@ function rq_stage_next_fseq($CLOUD, $key, $mediaDir) {
         CURLOPT_HTTPHEADER     => [
             'Content-Type: application/octet-stream',
             'x-upsert: true',
+            // Disable libcurl's automatic "Expect: 100-continue" on the upload
+            // body — Supabase Storage (behind Cloudflare) 400s the handshake,
+            // even though the identical body without it uploads fine.
+            'Expect:',
         ],
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 120,
+        CURLOPT_TIMEOUT        => 300,
     ]);
-    curl_exec($ch);
+    $body = curl_exec($ch);
     $rc = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
     fclose($fh);
@@ -318,7 +322,10 @@ function rq_stage_next_fseq($CLOUD, $key, $mediaDir) {
         rq_log("Staged \"$filename\" for catalog stats");
         return true;
     }
-    rq_log("Stage upload of \"$filename\" failed (HTTP $rc)");
+    // Surface the server's own message so a future failure is diagnosable from
+    // the log instead of just a bare status code.
+    $detail = is_string($body) && $body !== '' ? ' — ' . substr(trim($body), 0, 300) : '';
+    rq_log("Stage upload of \"$filename\" failed (HTTP $rc)$detail");
     return false;
 }
 
