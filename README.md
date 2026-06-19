@@ -129,15 +129,12 @@ an invalid key fetches nothing and writes nothing. Treat it like a password;
 SET:IQ can regenerate it at any time (the old key dies immediately).
 
 **What leaves the box.** The show key, the list of `.fseq` filenames (for
-reconcile), per-sequence durations + ID3 tags, small per-sequence stats derived
-locally from the render — a lighting-cue count, the top-3 colors, and
-run-length "lit channel range" summaries (the box has no xLights layout, so
-prop attribution happens in Studio IQ against the uploaded layout, not here) —
-the hostname (for the pull-status line), and — only while REQ:IQ is enabled —
-playback status (current song, live/offline). The stats are computed on the box
-by `scripts/fseq_stats.py` (sampled frame scan, cached by file signature); the
-`.fseq`/media bytes themselves never leave. No media, no raw sequence data, no
-credentials.
+reconcile), per-sequence durations + ID3 tags, the hostname (for the
+pull-status line), and — only while REQ:IQ is enabled — playback status
+(current song, live/offline). The `.fseq`/media bytes themselves never leave,
+and the box no longer parses sequence frames at all (the catalog's programming
+stats come from the `.xsq` drop in Studio IQ). No media, no raw sequence data,
+no credentials.
 
 ### Repo layout
 
