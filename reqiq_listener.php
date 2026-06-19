@@ -23,6 +23,7 @@ $mediaDir   = '/home/fpp/media';
 $cfgDir     = "$mediaDir/config";
 $keyFile    = "$cfgDir/$pluginName.key";
 $flagFile   = "$cfgDir/$pluginName.reqiq";              // enabled=1
+$metricsFlag = "$cfgDir/$pluginName.metrics";           // enabled=1 (fseq stats)
 $statusFile = "$cfgDir/$pluginName.reqiq-status.json";
 $pidFile    = "/tmp/$pluginName-reqiq.pid";
 
@@ -31,6 +32,7 @@ $FPP                = 'http://127.0.0.1';
 $INTERVAL           = 5;            // seconds between heartbeats (cloud may override)
 $PLAYLIST_REFRESH   = 6 * 3600;     // re-pull the requests playlist this often
 $SEQ_SYNC_INTERVAL  = 3600;         // re-report the on-box .fseq list this often
+$STAGE_INTERVAL     = 20;           // min seconds between fseq stage uploads (one at a time)
 
 // Shared per-sequence .fseq stats collector (also used by pull.php).
 require_once __DIR__ . '/fseq_collect.inc.php';
@@ -214,8 +216,7 @@ function rq_media_id3($FPP, $mediaName) {
     return $out !== [] ? $out : null;
 }
 
-function rq_sync_sequences($CLOUD, $FPP, $key, $allowScan = true) {
-    global $cfgDir, $mediaDir;
+function rq_sync_sequences($CLOUD, $FPP, $key) {
     list($code, $data) = rq_get_json("$FPP/api/files/Sequences");
     if ($code !== 200 || !is_array($data)) return;
     $files = isset($data['files']) && is_array($data['files']) ? $data['files'] : $data;
@@ -227,6 +228,10 @@ function rq_sync_sequences($CLOUD, $FPP, $key, $allowScan = true) {
     // Durations + ID3 tags let the cloud seed catalog rows with real
     // lengths, titles and artists (REQ:IQ-standalone mode). All-local
     // reads, cached across syncs — fseq headers and ID3 don't change.
+    // NOTE: the heavy per-.fseq frame scan is intentionally gone — the
+    // fseq-derived catalog stats are computed in the cloud/browser from each
+    // render the box stages (rq_stage_next_fseq), so this stays a cheap,
+    // near-instant report.
     static $infoCache = [];
     static $id3Cache  = [];
     $durations = [];
@@ -246,21 +251,75 @@ function rq_sync_sequences($CLOUD, $FPP, $key, $allowScan = true) {
             }
         }
     }
-    // Per-sequence .fseq stats (lighting cues, top-3 colors, activity runs for
-    // the cloud's prop reconcile). Cached by file signature on the box, so this
-    // is cheap once warm; fresh scans are skipped while a show is playing
-    // ($allowScan false) and budget-bounded otherwise so they never stall the
-    // transport loop. A small budget warms the cache over a few syncs; a manual
-    // "Pull from SET:IQ" warms it all at once.
-    $stats = setiq_collect_stats($names, __DIR__, $cfgDir, $mediaDir, $allowScan ? 25 : 0);
 
     rq_post_json("$CLOUD/api/setiq/fpp/sync", [
         'key'       => $key,
         'sequences' => $names,
         'durations' => (object) $durations,
         'id3'       => (object) $id3,
-        'stats'     => (object) $stats,
     ]);
+}
+
+/** True when the operator opted into fseq-derived catalog stats on the SET:IQ
+ *  Pull page (persisted as config/fpp-SETIQ.metrics). Default off. */
+function rq_metrics_enabled($metricsFlagFile) {
+    if (!file_exists($metricsFlagFile)) return false;
+    return (bool) preg_match('/^enabled=1/m', (string) @file_get_contents($metricsFlagFile));
+}
+
+/**
+ * Stage ONE rendered .fseq into the cloud for catalog-stat extraction.
+ *
+ * Asks the cloud what to stage next (it caps how many sit unprocessed, so this
+ * is the "pull one, process, dump, repeat" throttle), then PUTs that single
+ * file to the short-lived signed upload URL it returns. The browser
+ * catalog-stats pass decodes + deletes it, which frees a slot for the next one.
+ *
+ * Returns true when a file was uploaded (so the caller can decide to come back
+ * sooner), false on wait/done/error.
+ */
+function rq_stage_next_fseq($CLOUD, $key, $mediaDir) {
+    list($code, $resp) = rq_post_json("$CLOUD/api/setiq/fpp/fseq-stage", ['key' => $key]);
+    if ($code !== 200 || !is_array($resp)) return false;
+    $status = $resp['status'] ?? '';
+    if ($status !== 'ready') return false; // wait / done / error — nothing to do
+
+    $filename  = (string) ($resp['filename'] ?? '');
+    $uploadUrl = (string) ($resp['uploadUrl'] ?? '');
+    if ($filename === '' || $uploadUrl === '') return false;
+
+    $path = setiq_fseq_path($mediaDir, $filename);
+    if ($path === null || !is_file($path)) {
+        rq_log("Stage: \"$filename\" not found on the box — skipping");
+        return false;
+    }
+
+    $fh = @fopen($path, 'rb');
+    if (!$fh) return false;
+    $size = @filesize($path);
+    $ch = curl_init($uploadUrl);
+    curl_setopt_array($ch, [
+        CURLOPT_PUT            => true,
+        CURLOPT_INFILE         => $fh,
+        CURLOPT_INFILESIZE     => $size !== false ? $size : 0,
+        CURLOPT_HTTPHEADER     => [
+            'Content-Type: application/octet-stream',
+            'x-upsert: true',
+        ],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 120,
+    ]);
+    curl_exec($ch);
+    $rc = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    fclose($fh);
+
+    if ($rc >= 200 && $rc < 300) {
+        rq_log("Staged \"$filename\" for catalog stats");
+        return true;
+    }
+    rq_log("Stage upload of \"$filename\" failed (HTTP $rc)");
+    return false;
 }
 
 /**
@@ -324,6 +383,7 @@ rq_log('REQ:IQ listener started (pid ' . getmypid() . ')');
 $playlistName     = null;   // cloud tells us; cached after first heartbeat
 $lastPlaylistPull = 0;
 $lastSeqSync      = 0;
+$lastStage        = 0;      // when we last staged a render for catalog stats
 $lastInsertedId   = '';     // re-insert guard if /mark fails
 $lastBeat         = 0;      // when we last POSTed a heartbeat
 $lastSig          = null;   // last reported now-playing signature
@@ -364,12 +424,22 @@ while (true) {
     // console slider mirrors volume changes made on the box itself.
     $volume          = isset($fpp['volume']) ? (int) $fpp['volume'] : null;
 
-    // Periodically re-report the sequence list + per-sequence .fseq stats.
-    // Runs after the status read so fresh stats scans are skipped while a show
-    // is playing — a first-time scan must never stall the transport loop.
+    // Periodically re-report the (cheap) sequence list + durations + ID3.
     if (time() - $lastSeqSync > $SEQ_SYNC_INTERVAL) {
-        rq_sync_sequences($CLOUD, $FPP, $key, !$isPlaying);
+        rq_sync_sequences($CLOUD, $FPP, $key);
         $lastSeqSync = time();
+    }
+
+    // Drip renders up for catalog-stat extraction — one at a time, only while
+    // nothing is playing (a large upload must never compete with the transport
+    // loop), and only when the operator opted in. The cloud paces us (it caps
+    // how many sit unprocessed), so this just nudges the next one whenever the
+    // interval is due.
+    if (!$isPlaying
+        && rq_metrics_enabled($metricsFlag)
+        && time() - $lastStage > $STAGE_INTERVAL) {
+        rq_stage_next_fseq($CLOUD, $key, $mediaDir);
+        $lastStage = time();
     }
 
     // Only beat when what the viewer sees changes, or the keepalive is due.
