@@ -236,6 +236,26 @@ def main():
         check("discrete prop survives the cap (props=5 fix)", covered)
         print("ok (activity coarsening):", len(bounded), "runs")
 
+        # ── Mega-display palette exclusion: a giant grey "matrix" must not
+        # define the palette; a small red prop should win once it's excluded ──
+        C4 = 31005
+        mfr = bytearray(C4)
+        for c in range(0, 30000):
+            mfr[c] = 100  # 10,000-pixel matrix, mid-grey (would dominate)
+        mfr[31002] = 255  # one small red prop, past a dark gap (aligned to 3)
+        mpath = os.path.join(d, "Matrix.fseq")
+        build_fseq(mpath, C4, [mfr, mfr, mfr])
+        sm = fs.compute(mpath)
+        blocks = fs._dominant_blocks(
+            [3 if v else 0 for v in (1 if mfr[c] >= fs.LIT else 0 for c in range(C4))],
+            C4,
+        )
+        check("dominant matrix block detected", len(blocks) == 1)
+        top4 = sm["colors"][0]
+        r4, g4, b4 = (int(top4[1:3], 16), int(top4[3:5], 16), int(top4[5:7], 16))
+        check("mega matrix excluded → red prop wins palette", r4 > 150 and g4 < 60 and b4 < 60)
+        print("ok (mega color exclusion):", sm["colors"])
+
     print("\nALL PASS")
 
 
