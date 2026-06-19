@@ -52,6 +52,14 @@ MOMENT_BUCKET_MS = 1000  # window size for "key moments"
 MAX_MOMENTS = 3          # how many key moments to emit
 MOMENT_SPREAD = 3        # keep picked moments >= this many buckets apart
 MOMENT_COLORS = 3        # top colors per moment
+# Mega-display palette exclusion. The box has no xLights layout, so it can't
+# tell which channels are a matrix; it detects dominant whole-canvas blocks by
+# SIZE and drops their pixels from the palette, so a matrix running (say) a
+# black-and-white video can't define the whole show's colors.
+MEGA_COLOR_FRAC = 0.10   # a lit block >= this fraction of the channel space …
+MEGA_COLOR_ABS = 6000    # … AND >= this many channels is treated as a mega display
+MEGA_BLOCK_GAP = 64      # bridge small dark gaps when measuring a block's extent
+COLOR_SAMPLES = 80       # frames re-scanned for the mega-excluded palette
 
 
 class FseqError(Exception):
@@ -281,19 +289,30 @@ def _bounded_runs(litcount, dense_len):
     return runs
 
 
-def _frame_top_colors(fr, top=MOMENT_COLORS):
+def _frame_top_colors(fr, top=MOMENT_COLORS, exclude=()):
     """Top hex colors of a single frame, most-USED first.
 
     Ranked by how many lit pixels carry each (quantized) color — frequency, not
     brightness. Summing r+g+b instead made white/near-white win every time
     (765 per pixel) over the show's actual saturated colors; counting pixels
-    surfaces the colors that genuinely cover the most of the display."""
+    surfaces the colors that genuinely cover the most of the display.
+
+    `exclude` is a list of [start, end) channel ranges (mega-displays) whose
+    pixels are skipped, so a matrix's video can't define the moment's colors."""
     shift = 8 - COLOR_BITS
     color_w = {}
     n = (len(fr) // 3) * 3
+    keep = None
+    if exclude:
+        keep = bytearray([1]) * len(fr)
+        for s, e in exclude:
+            for c in range(max(0, s), min(len(fr), e)):
+                keep[c] = 0
     for c in range(0, n, 3):
         r, g, b = fr[c], fr[c + 1], fr[c + 2]
         if r < LIT and g < LIT and b < LIT:
+            continue
+        if keep is not None and not (keep[c] or keep[c + 1] or keep[c + 2]):
             continue
         key = ((r >> shift) << (2 * COLOR_BITS)) | ((g >> shift) << COLOR_BITS) | (
             b >> shift
@@ -313,7 +332,7 @@ def _frame_runs(fr):
     return _bounded_runs(litcount, dense)
 
 
-def _pick_moments(fq, frame_lits, step_ms):
+def _pick_moments(fq, frame_lits, step_ms, exclude=()):
     """Pick the top key windows for the hype moment from the sampled frames.
 
     Buckets sampled frames into MOMENT_BUCKET_MS windows, scores each window by
@@ -355,7 +374,7 @@ def _pick_moments(fq, frame_lits, step_ms):
                 # the timecode must land exactly when these colors hit — stamping
                 # the bucket start put the callout up to a second early.
                 "t_ms": int(idx * step_ms),
-                "colors": _frame_top_colors(fr),
+                "colors": _frame_top_colors(fr, exclude=exclude),
                 "activity": _frame_runs(fr),
             }
         )
@@ -443,6 +462,77 @@ def _compute_pure(fq, idxs):
     return litcount, colors, raw_changes, frame_lits
 
 
+# ── mega-display palette exclusion (layout-free, by size) ─────────────
+
+
+def _dominant_blocks(litcount, dense_len):
+    """Channel ranges [(start, end), ...] of dominant whole-canvas elements
+    (typically a P5/P10 matrix), detected by SIZE alone — the box has no layout.
+    Their pixels are dropped from the palette so a matrix running, say, a
+    black-and-white video can't define the whole show's colors. Empty when
+    nothing is big enough to dominate."""
+    if dense_len <= 0:
+        return []
+    thresh = max(MEGA_COLOR_ABS, int(dense_len * MEGA_COLOR_FRAC))
+    blocks = []
+    for start, length, _w in _runs_from_litcount(litcount, dense_len, MEGA_BLOCK_GAP):
+        if length >= thresh:
+            blocks.append((start, start + length))
+    return blocks
+
+
+def _colors_excluding_numpy(np, fq, idxs, exclude):
+    """Top-3 colors over the sampled frames, skipping pixels in the excluded
+    (mega-display) channel ranges. Same frequency ranking as _compute_numpy."""
+    shift = 8 - COLOR_BITS
+    nkeys = 1 << (3 * COLOR_BITS)
+    keep = np.ones(fq.dense_len, dtype=bool)
+    for s, e in exclude:
+        keep[max(0, s):min(fq.dense_len, e)] = False
+    color_w = np.zeros(nkeys, dtype=np.float64)
+    for i in idxs:
+        fr = np.frombuffer(fq.frame(i), dtype=np.uint8)
+        m = (fr.shape[0] // 3) * 3
+        if not m:
+            continue
+        tri = fr[:m].reshape(-1, 3).astype(np.uint16)
+        kp = keep[:m].reshape(-1, 3).any(axis=1)
+        lit = (tri.max(axis=1) >= LIT) & kp
+        sel = tri[lit]
+        if sel.shape[0]:
+            q = (sel >> shift).astype(np.int64)
+            keys = (q[:, 0] << (2 * COLOR_BITS)) | (q[:, 1] << COLOR_BITS) | q[:, 2]
+            color_w += np.bincount(keys, minlength=nkeys)
+    top = np.argsort(color_w)[::-1]
+    return [_decode_color_key(int(k)) for k in top[:3] if color_w[int(k)] > 0]
+
+
+def _colors_excluding_pure(fq, idxs, exclude):
+    """Pure-stdlib twin of _colors_excluding_numpy."""
+    shift = 8 - COLOR_BITS
+    dense = fq.dense_len
+    keep = bytearray([1]) * dense
+    for s, e in exclude:
+        for c in range(max(0, s), min(dense, e)):
+            keep[c] = 0
+    color_w = {}
+    for i in idxs:
+        fr = fq.frame(i)
+        n = (min(dense, len(fr)) // 3) * 3
+        for c in range(0, n, 3):
+            r, g, b = fr[c], fr[c + 1], fr[c + 2]
+            if r < LIT and g < LIT and b < LIT:
+                continue
+            if not (keep[c] or keep[c + 1] or keep[c + 2]):
+                continue
+            key = ((r >> shift) << (2 * COLOR_BITS)) | ((g >> shift) << COLOR_BITS) | (
+                b >> shift
+            )
+            color_w[key] = color_w.get(key, 0) + 1
+    top = sorted(color_w.items(), key=lambda kv: kv[1], reverse=True)[:3]
+    return [_decode_color_key(k) for k, _ in top]
+
+
 def compute(fseq_path, samples=DEFAULT_SAMPLES):
     # A scan either succeeds with real stats or returns an explicit
     # {"error": ...} marker — never a silent empty {}. The caller uses the
@@ -458,13 +548,15 @@ def compute(fseq_path, samples=DEFAULT_SAMPLES):
         if not idxs:
             return {"error": "no frames"}
         try:
-            try:
-                import numpy as np  # type: ignore
-
+            import numpy as np  # type: ignore
+        except ImportError:
+            np = None
+        try:
+            if np is not None:
                 litcount, colors, raw_changes, frame_lits = _compute_numpy(
                     np, fq, idxs
                 )
-            except ImportError:
+            else:
                 litcount, colors, raw_changes, frame_lits = _compute_pure(fq, idxs)
         except FseqError as e:
             # No decoder for this compression (e.g. zstd), or a bad block.
@@ -472,10 +564,27 @@ def compute(fseq_path, samples=DEFAULT_SAMPLES):
         except Exception as e:  # corrupt stream, bad compression payload, etc.
             return {"error": "could not decode frames: %s" % type(e).__name__}
 
+        # Mega-display palette exclusion: a giant element (e.g. a matrix running
+        # a black-and-white video) would otherwise dominate the frequency-ranked
+        # palette. The box has no layout, so detect dominant whole-canvas blocks
+        # by size and drop their pixels from the colors. Only re-scans frames
+        # when such a block exists; falls back to the all-channel colors on any
+        # trouble so colors are never lost.
+        blocks = _dominant_blocks(litcount, fq.dense_len)
+        if blocks:
+            cidxs = sample_indices(fq.frame_count, min(len(idxs), COLOR_SAMPLES))
+            try:
+                if np is not None:
+                    colors = _colors_excluding_numpy(np, fq, cidxs, blocks)
+                else:
+                    colors = _colors_excluding_pure(fq, cidxs, blocks)
+            except Exception:
+                pass
+
         stride = fq.frame_count / max(1, len(idxs))
         cues = int(round(raw_changes * stride))
         runs = _bounded_runs(litcount, fq.dense_len)
-        moments = _pick_moments(fq, frame_lits, fq.step_ms)
+        moments = _pick_moments(fq, frame_lits, fq.step_ms, blocks)
         return {
             "cues": cues,
             "colors": colors,
