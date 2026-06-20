@@ -71,6 +71,25 @@ function setiq_local_sequences() {
     return $names;
 }
 
+/** The commands this box can run (FPP /api/commands) — name + argument
+ *  schema, including any plugin commands (Remote Falcon, etc.). Returns a
+ *  trimmed [{name, args}] list, or [] when unavailable. */
+function setiq_local_commands() {
+    list($code, $body) = setiq_get_json('http://127.0.0.1/api/commands');
+    if ($code !== 200) return [];
+    $data = json_decode($body, true);
+    if (!is_array($data)) return [];
+    $out = [];
+    foreach ($data as $c) {
+        if (!is_array($c)) continue;
+        $name = $c['name'] ?? '';
+        if (!is_string($name) || $name === '') continue;
+        $args = (isset($c['args']) && is_array($c['args'])) ? $c['args'] : [];
+        $out[] = ['name' => $name, 'args' => $args];
+    }
+    return $out;
+}
+
 /** Duration (seconds) + media filename for one sequence. xLights
  *  writes the audio path into the fseq header (variableHeaders.mf). */
 function setiq_sequence_info($name) {
@@ -141,11 +160,18 @@ function setiq_sync_sequences($base, $key) {
     // scan no longer runs here; the fseq-derived catalog stats (props, fave
     // prop, palette, key moments) are computed in the cloud/browser from each
     // render the box stages later (see the REQ:IQ listener's staging pass).
+    // The box's live command list (FPP version + installed plugins decide
+    // it) so SET:IQ's show-day trigger picker offers the real set, never a
+    // hardcoded one. Best-effort: a missing/oddly-shaped list must not fail
+    // the sync.
+    $commands = setiq_local_commands();
+
     $payload = json_encode([
         'key'       => $key,
         'sequences' => $names,
         'durations' => (object) $durations,
         'id3'       => (object) $id3,
+        'commands'  => $commands,
     ]);
     $ch = curl_init("$base/api/setiq/fpp/sync");
     curl_setopt_array($ch, [
