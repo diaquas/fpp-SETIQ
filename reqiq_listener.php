@@ -119,8 +119,12 @@ function rq_refresh_requests_playlist($CLOUD, $FPP, $key) {
  *   pause / resume        → Toggle Pause (FPP has a single toggle)
  *   stop                  → Stop Now
  *   volume                → Volume Set <0-100>
+ *   jump                  → Start Playlist At Item <playlist> <index>
+ *
+ * `$currentPlaylist` is the name of the playlist FPP is running now — needed
+ * by "jump" to resolve the target item by name within it.
  */
-function rq_exec_command($FPP, $command) {
+function rq_exec_command($FPP, $command, $currentPlaylist = '') {
     $type = is_array($command) ? ($command['type'] ?? '') : '';
     if ($type === '') return;
 
@@ -137,6 +141,23 @@ function rq_exec_command($FPP, $command) {
         $vol = (int) round((float) ($command['value'] ?? 0));
         $vol = max(0, min(100, $vol));
         $parts = ['Volume Set', $vol];
+    } elseif ($type === 'jump') {
+        if ($currentPlaylist === '') {
+            rq_log("Jump ignored — no playlist is running");
+            return;
+        }
+        // Prefer matching the target step by name in the running playlist
+        // (robust to rotation drift); fall back to the reported 1-based index.
+        $arg = isset($command['arg']) ? (string) $command['arg'] : '';
+        $idx = $arg !== '' ? rq_find_index($FPP, $currentPlaylist, $arg) : null;
+        if ($idx === null) {
+            $idx = (int) round((float) ($command['value'] ?? 0));
+        }
+        if ($idx < 1) {
+            rq_log("Jump target \"$arg\" not found in \"$currentPlaylist\" — ignored");
+            return;
+        }
+        $parts = ['Start Playlist At Item', $currentPlaylist, $idx];
     } elseif (isset($map[$type])) {
         $parts = $map[$type];
     } else {
@@ -446,10 +467,10 @@ while (true) {
         }
     }
 
-    // 4. Execute a live transport directive (next/pause/volume/…), if any.
+    // 4. Execute a live transport directive (next/pause/volume/jump/…), if any.
     $command = $resp['command'] ?? null;
     if (is_array($command) && !empty($command['type'])) {
-        rq_exec_command($FPP, $command);
+        rq_exec_command($FPP, $command, $playingName);
     }
 
     rq_write_status($statusFile, [
