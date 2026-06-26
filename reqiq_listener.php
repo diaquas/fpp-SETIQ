@@ -32,6 +32,17 @@ $INTERVAL           = 5;            // seconds between heartbeats (cloud may ove
 $PLAYLIST_REFRESH   = 6 * 3600;     // re-pull the requests playlist this often
 $SEQ_SYNC_INTERVAL  = 3600;         // re-report the on-box .fseq list this often
 
+// Plugin version (reported in each heartbeat for the cloud health panel).
+// Sourced from pluginInfo.json so there's one place to bump it.
+$PLUGIN_VERSION = 'unknown';
+$infoFile = __DIR__ . '/pluginInfo.json';
+if (is_readable($infoFile)) {
+    $info = json_decode((string) file_get_contents($infoFile), true);
+    if (is_array($info) && !empty($info['version'])) {
+        $PLUGIN_VERSION = (string) $info['version'];
+    }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────
 
 function rq_log($msg) {
@@ -410,6 +421,7 @@ while (true) {
             'playlist'          => $playingName,
             'upcoming'          => $upcoming,
             'volume'            => $volume,
+            'plugin_version'    => $PLUGIN_VERSION,
         ],
     ]);
 
