@@ -9,6 +9,16 @@ chmod +x scripts/*.sh 2>/dev/null
 
 FLAG=/home/fpp/media/config/fpp-SETIQ.reqiq
 LOG=/home/fpp/media/logs/fpp-SETIQ-reqiq.log
+WATCHDOG="$(pwd)/scripts/watchdog.sh"
+
+# Install a once-a-minute watchdog cron so the REQ:IQ listener is respawned if
+# it ever dies (crash / OOM / mid-run exit). Without it the listener only
+# (re)started on fppd boot, so a dead listener left the show "offline" in
+# REQ:IQ until the next FPP restart. Idempotent: drop any prior line first.
+( crontab -l 2>/dev/null | grep -v 'fpp-SETIQ/scripts/watchdog.sh' ; \
+  echo "* * * * * $WATCHDOG >/dev/null 2>&1" ) | crontab - 2>/dev/null \
+  && echo "REQ:IQ watchdog cron installed." \
+  || echo "Could not install the watchdog cron (no crontab?) — listener still starts on boot."
 
 if [ -f "$FLAG" ] && grep -q '^enabled=1' "$FLAG"; then
     if ! pgrep -f reqiq_listener.php > /dev/null 2>&1; then
