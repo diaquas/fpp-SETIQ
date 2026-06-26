@@ -130,7 +130,11 @@ function rq_refresh_requests_playlist($CLOUD, $FPP, $key) {
  *   pause / resume        → Toggle Pause (FPP has a single toggle)
  *   stop                  → Stop Now
  *   volume                → Volume Set <0-100>
- *   jump                  → Start Playlist At Item <playlist> <index>
+ *   jump                  → Start Playlist At Item <currentPlaylist> <index>
+ *   start                 → Start Playlist At Item <arg playlist> <index>
+ *                           (starts a NOT-yet-running playlist — the operator's
+ *                           "Start show now" from the REQ:IQ Showtime card; the
+ *                           cloud sends tonight's playlist + item 1 = opener)
  *
  * `$currentPlaylist` is the name of the playlist FPP is running now — needed
  * by "jump" to resolve the target item by name within it.
@@ -169,6 +173,18 @@ function rq_exec_command($FPP, $command, $currentPlaylist = '') {
             return;
         }
         $parts = ['Start Playlist At Item', $currentPlaylist, $idx];
+    } elseif ($type === 'start') {
+        // Start a specific playlist (need not be running) at an item — the
+        // operator's "Start show now". The cloud sends tonight's SET:IQ
+        // playlist in `arg` and item 1 (the opener, past the pre-show).
+        $playlist = isset($command['arg']) ? (string) $command['arg'] : '';
+        if ($playlist === '') {
+            rq_log("Start ignored — no playlist named");
+            return;
+        }
+        $idx = (int) round((float) ($command['value'] ?? 1));
+        if ($idx < 1) $idx = 1;
+        $parts = ['Start Playlist At Item', $playlist, $idx];
     } elseif (isset($map[$type])) {
         $parts = $map[$type];
     } else {
