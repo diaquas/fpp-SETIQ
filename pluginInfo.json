@@ -1,7 +1,7 @@
 {
   "repoName": "fpp-SETIQ",
   "name": "SET:IQ + REQ:IQ",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": "Lights of Elm Ridge",
   "description": "SET:IQ + REQ:IQ companion for FPP: pulls SET:IQ playlists and schedules straight from the cloud with your show key, and runs the REQ:IQ listener (now playing, Up Next, viewer requests). Runs entirely on the FPP host.",
   "homeURL": "https://github.com/diaquas/fpp-SETIQ",
