@@ -391,6 +391,22 @@ while (true) {
     list($fppCode, $fpp) = rq_get_json("$FPP/api/system/status");
     if ($fppCode !== 200 || !is_array($fpp)) {
         rq_write_status($statusFile, ['ok' => false, 'error' => "FPP status unreachable (HTTP $fppCode)"]);
+        // FPP's local API hiccups (restart, heavy load) shouldn't make the box
+        // look OFFLINE in the REQ:IQ console — the listener (and the box) are
+        // clearly still up. Keep a heartbeat flowing on the keepalive cadence,
+        // marked unreachable, so `last_heartbeat_at` stays fresh and the cloud
+        // reads "online, FPP API quiet" instead of going dark.
+        if ((time() - $lastBeat) >= $INTERVAL) {
+            $lastBeat = time();
+            $lastSig  = null; // force a real beat once FPP comes back
+            rq_post_json("$CLOUD/api/reqiq/fpp/heartbeat", [
+                'key' => $key,
+                'fpp' => [
+                    'status_name'    => 'unreachable',
+                    'plugin_version' => $PLUGIN_VERSION,
+                ],
+            ]);
+        }
         sleep($POLL);
         continue;
     }
