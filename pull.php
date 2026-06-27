@@ -14,8 +14,17 @@ $pullStatusFile = "$cfgDir/$pluginName.pull-status.json";
 // The operator's public REQ:IQ viewer link, refreshed from the cloud on
 // each pull. The REQ:IQ tab opens this so it points at <slug>.reqiq.net.
 $reqiqUrlFile = "$cfgDir/$pluginName.reqiq-url";
+// The last key the cloud actually accepted — drives the live "valid" badge,
+// which must reflect a verified key, not merely "a key is saved".
+$verifiedKeyFile = "$cfgDir/$pluginName.key-verified";
 
 $SETIQ_BASE = 'https://lightsofelmridge.com';
+
+// FPP command that fires a saved Command Preset by name. SET:IQ schedules its
+// triggers through named "<Show> - …" presets so they're identifiable; this is
+// the one place to change if FPP ever renames the command. Guarded so pull.php
+// and manage.php can both define it without colliding.
+if (!defined('SETIQ_RUN_PRESET_CMD')) define('SETIQ_RUN_PRESET_CMD', 'Run Command Preset');
 
 /** Render the "Last pull" timestamp as "today · 4:12 PM" / "Jun 3 · …". */
 function setiq_pull_when($ts) {
@@ -199,6 +208,29 @@ function setiq_sync_sequences($base, $key) {
  * stale entries for nights removed from the plan) while every other
  * entry (background lights, etc.) is preserved untouched.
  */
+/** The FPP-safe "<Show> - " prefix that tags every SET:IQ-owned name
+ *  (playlists AND command presets). Empty-ish show → " - ", treated as no
+ *  prefix so we never match on it. */
+function setiq_owned_prefix($showName) {
+    return trim(preg_replace('/[^-a-zA-Z0-9_ ]/', '', $showName)) . ' - ';
+}
+
+/**
+ * True when a schedule row is one of SET:IQ's triggers: a command row that
+ * fires a "<Show> - …" Command Preset via "Run Command Preset". These carry
+ * an empty playlist (FPP marks command rows that way), so the playlist-prefix
+ * rule can't see them — without this they'd duplicate on every pull and be
+ * undeletable. Matching on the preset name in args[0] is what lets us own
+ * them, while leaving the operator's own command rows untouched.
+ */
+function setiq_entry_is_setiq_trigger($e, $prefix) {
+    if (!is_array($e) || $prefix === ' - ') return false;
+    if (($e['command'] ?? '') !== SETIQ_RUN_PRESET_CMD) return false;
+    $args = (isset($e['args']) && is_array($e['args'])) ? $e['args'] : [];
+    $first = isset($args[0]) ? (string) $args[0] : '';
+    return $first !== '' && strpos($first, $prefix) === 0;
+}
+
 function setiq_update_schedule($showName, $entries) {
     list($code, $body) = setiq_get_json('http://127.0.0.1/api/schedule');
     if ($code !== 200) return [false, "could not read the FPP schedule (HTTP $code)"];
@@ -206,12 +238,15 @@ function setiq_update_schedule($showName, $entries) {
     if (!is_array($existing)) $existing = [];
 
     // Same character rules as SET:IQ's playlist naming (FPP-safe names).
-    $prefix = trim(preg_replace('/[^-a-zA-Z0-9_ ]/', '', $showName)) . ' - ';
+    $prefix = setiq_owned_prefix($showName);
     $kept = [];
     $replaced = 0;
     foreach ($existing as $e) {
         $pl = is_array($e) ? ($e['playlist'] ?? '') : '';
-        if ($prefix !== ' - ' && $pl !== '' && strpos($pl, $prefix) === 0) {
+        $ownedByPlaylist = ($prefix !== ' - ' && $pl !== '' && strpos($pl, $prefix) === 0);
+        // Trigger rows (command presets) are ours too — replace, not keep,
+        // so they stop piling up on every pull.
+        if ($ownedByPlaylist || setiq_entry_is_setiq_trigger($e, $prefix)) {
             $replaced++;
             continue;
         }
@@ -246,6 +281,67 @@ function setiq_update_schedule($showName, $entries) {
 
     return [true, count($entries) . ' show entr' . (count($entries) === 1 ? 'y' : 'ies')
         . " written ($replaced replaced, " . count($kept) . ' non-SET:IQ kept)'];
+}
+
+/**
+ * Ensure SET:IQ's Command Presets exist on this box before the schedule's
+ * trigger rows fire them. FPP keeps presets in config/commandPresets.json;
+ * this reads it, drops any prior SET:IQ presets (name prefixed "<Show> - "),
+ * splices in the fresh set and writes it back — the same scoped-merge model
+ * as the schedule, so the operator's own presets are never touched. A trigger
+ * with no backing preset would fire nothing, which is exactly the breakage
+ * the named-preset approach exists to prevent.
+ */
+function setiq_apply_command_presets($showName, $presets) {
+    $prefix = setiq_owned_prefix($showName);
+    if ($prefix === ' - ') return [false, 0];
+
+    list($code, $body) = setiq_get_json('http://127.0.0.1/api/configfile/commandPresets.json');
+    $cfg = ($code === 200) ? json_decode($body, true) : null;
+    // FPP stores the file as { "commandPresets": [ … ] }; tolerate a bare array.
+    $existing = [];
+    if (is_array($cfg)) {
+        $existing = (isset($cfg['commandPresets']) && is_array($cfg['commandPresets']))
+                  ? $cfg['commandPresets'] : $cfg;
+    }
+    // Keep every preset that isn't a prior SET:IQ one.
+    $kept = [];
+    foreach ($existing as $p) {
+        $name = is_array($p) ? (string) ($p['name'] ?? '') : '';
+        if ($name !== '' && strpos($name, $prefix) === 0) continue;
+        $kept[] = $p;
+    }
+    // Normalize the cloud's preset defs into FPP's preset shape.
+    $fresh = [];
+    foreach ($presets as $p) {
+        if (!is_array($p)) continue;
+        $name = isset($p['name']) ? (string) $p['name'] : '';
+        $cmd  = isset($p['command']) ? (string) $p['command'] : '';
+        if ($name === '' || $cmd === '') continue;
+        $args = (isset($p['args']) && is_array($p['args'])) ? array_values($p['args']) : [];
+        $fresh[] = [
+            'name'             => $name,
+            'command'          => $cmd,
+            'args'             => $args,
+            'multisyncCommand' => !empty($p['multisyncCommand']),
+            'multisyncHosts'   => '',
+            'description'      => 'SET:IQ trigger',
+        ];
+    }
+    $merged = array_values(array_merge($kept, $fresh));
+
+    $ch = curl_init('http://127.0.0.1/api/configfile/commandPresets.json');
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => json_encode(['commandPresets' => $merged]),
+        CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 15,
+    ]);
+    curl_exec($ch);
+    $rc = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return [$rc === 200, count($fresh)];
 }
 
 /**
@@ -340,8 +436,11 @@ function setiq_push_import($base, $key) {
 function setiq_fetch_cloud($base, $key) {
     // Self-report the hostname so SET:IQ's dialog can show
     // "last pulled by <host>".
+    // presets=1 opts this box into named Command Presets for triggers — the
+    // cloud then emits "Run Command Preset" schedule rows we can identify and
+    // delete, instead of anonymous raw command rows.
     list($code, $body) = setiq_get_json(
-        "$base/api/setiq/fpp/playlists?key=" . rawurlencode($key),
+        "$base/api/setiq/fpp/playlists?key=" . rawurlencode($key) . "&presets=1",
         ['X-FPP-Host: ' . php_uname('n')]
     );
     $data = json_decode($body, true);
@@ -389,22 +488,49 @@ function setiq_compare_rows($data) {
     return $rows;
 }
 
-// Save the key when submitted.
-$key = file_exists($keyFile) ? trim(file_get_contents($keyFile)) : '';
-if (isset($_POST['key'])) {
-    $key = trim($_POST['key']);
-    @file_put_contents($keyFile, $key);
-}
-
 $results = [];
 $rows = [];
 $showName = '';
 $error = '';
+$notice = '';
 $syncMsg = '';
 $schedMsg = '';
 $schedErr = '';
 $importMsg = '';
 $action = $_POST['action'] ?? '';
+
+// Disconnect: forget the show key and stop talking to SET:IQ/REQ:IQ. The
+// disconnect form posts no key field, so the key-save below won't re-add it.
+if ($action === 'disconnect') {
+    @unlink($keyFile);
+    @unlink($verifiedKeyFile);
+    @unlink($reqiqUrlFile);
+    @unlink($pullStatusFile);
+    // Stop REQ:IQ too, so the box is fully detached: clear its enable flag
+    // and kill a running listener (it also exits on its own next tick).
+    @file_put_contents("$cfgDir/$pluginName.reqiq", "enabled=0\n");
+    $reqiqPidFile = "/tmp/$pluginName-reqiq.pid";
+    if (file_exists($reqiqPidFile)) {
+        $rpid = (int) trim((string) @file_get_contents($reqiqPidFile));
+        if ($rpid > 0 && file_exists("/proc/$rpid")) @exec('kill ' . $rpid);
+        @unlink($reqiqPidFile);
+    }
+    $notice = 'Disconnected — the show key was removed and REQ:IQ stopped. '
+            . 'This box no longer talks to SET:IQ or REQ:IQ until you paste a key again.';
+}
+
+// Save the key when submitted (any POST that carries the key field).
+$key = file_exists($keyFile) ? trim(file_get_contents($keyFile)) : '';
+if (isset($_POST['key'])) {
+    $key = trim($_POST['key']);
+    if ($key === '') {
+        @unlink($keyFile);
+        @unlink($verifiedKeyFile);
+    } else {
+        @file_put_contents($keyFile, $key);
+    }
+}
+
 // Per-playlist Pull buttons submit their playlist name as "pullone".
 $pullOneName = isset($_POST['pullone']) && is_string($_POST['pullone'])
              ? trim($_POST['pullone']) : '';
@@ -416,6 +542,9 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
     } elseif ($action !== 'sync' && $action !== 'import') {
         list($error, $data) = setiq_fetch_cloud($SETIQ_BASE, $key);
         if ($data) $showName = $data['show'] ?? '';
+        // The cloud accepted this key — remember it as verified so the "valid"
+        // badge reflects a real check, not just "a key is saved".
+        if ($data) @file_put_contents($verifiedKeyFile, $key);
         // Pull the operator's REQ:IQ link over with the playlists. Only
         // replace the stored one when it actually changed.
         if ($data && isset($data['reqiqUrl']) && is_string($data['reqiqUrl'])) {
@@ -442,8 +571,16 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
         // Push the season schedule into FPP's scheduler so the full
         // show run exists, not just the playlists.
         if (!empty($_POST['schedule']) && isset($data['schedule']) && is_array($data['schedule'])) {
+            // Create the trigger Command Presets FIRST — the schedule rows
+            // fire them by name, so they must exist before fppd reloads.
+            $presetNote = '';
+            if (isset($data['commandPresets']) && is_array($data['commandPresets']) && $data['commandPresets']) {
+                list($pok, $pn) = setiq_apply_command_presets($showName, $data['commandPresets']);
+                if ($pok && $pn > 0) $presetNote = " $pn trigger preset" . ($pn === 1 ? '' : 's') . ' set.';
+                elseif (!$pok) $presetNote = ' (trigger presets could not be written).';
+            }
             list($sok, $smsg) = setiq_update_schedule($showName, $data['schedule']);
-            if ($sok) $schedMsg = "FPP schedule updated: $smsg.";
+            if ($sok) $schedMsg = "FPP schedule updated: $smsg.$presetNote";
             else $schedErr = "FPP schedule not updated: $smsg.";
         }
         // Persist a small snapshot to back the "Last pull" status panel.
@@ -495,6 +632,11 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
 $pullStatus = file_exists($pullStatusFile)
             ? json_decode(file_get_contents($pullStatusFile), true) : null;
 if (!is_array($pullStatus)) $pullStatus = null;
+
+// The last key the cloud accepted — the live "valid" badge compares the text
+// field to this (empty until the first successful Pull/Check).
+$verifiedKey = file_exists($verifiedKeyFile)
+             ? trim((string) file_get_contents($verifiedKeyFile)) : '';
 ?>
 <div class="container-fluid">
  <div class="iq-pane">
@@ -505,6 +647,10 @@ if (!is_array($pullStatus)) $pullStatus = null;
 
   <?php if ($error): ?>
     <div class="setiq-alert setiq-alert-err" style="margin-top:14px"><?= htmlspecialchars($error) ?></div>
+  <?php endif; ?>
+
+  <?php if ($notice): ?>
+    <div class="setiq-alert setiq-alert-ok" style="margin-top:14px"><?= htmlspecialchars($notice) ?></div>
   <?php endif; ?>
 
   <?php if ($syncMsg): ?>
@@ -546,9 +692,11 @@ if (!is_array($pullStatus)) $pullStatus = null;
       <div class="iq-keyrow">
         <input type="text" id="setiq-key" name="key" class="iq-input"
                value="<?= htmlspecialchars($key) ?>" placeholder="paste your key" autocomplete="off">
-        <?php if ($key !== ''): ?>
-          <span class="iq-valid"><span class="iq-dot"></span>valid</span>
-        <?php endif; ?>
+        <!-- Validity tracks the LIVE field against the last key the cloud
+             accepted (verified on a successful Pull/Check), not merely whether
+             a key is saved — so editing the field updates it immediately. -->
+        <span id="setiq-keystate" class="iq-keystate"
+              data-verified="<?= htmlspecialchars($verifiedKey, ENT_QUOTES) ?>"></span>
       </div>
       <label class="iq-check">
         <input type="checkbox" name="schedule" value="1" <?= ($_SERVER['REQUEST_METHOD'] !== 'POST' || !empty($_POST['schedule'])) ? 'checked' : '' ?>>
@@ -572,6 +720,17 @@ if (!is_array($pullStatus)) $pullStatus = null;
          this box's show; nothing on this FPP changes, and SET:IQ won't touch
          your season until you apply it in the editor.</p>
     </form>
+
+    <?php if ($key !== '' || $verifiedKey !== ''): ?>
+    <!-- Disconnect lives in its own form with no key field, so it can clear
+         the saved key without the key-save path re-adding it. -->
+    <form method="post" class="iq-btnrow-sub" style="margin-top:10px"
+          onsubmit="return confirm('Disconnect this box from SET:IQ / REQ:IQ?\n\nThe show key is removed and the REQ:IQ listener stops. Playlists and schedule entries already on the box are left in place — use Manage Playlists to remove those.');">
+      <button type="submit" class="iq-linkbtn" name="action" value="disconnect"
+              title="Forget the show key and stop REQ:IQ — fully detaches this box from SET:IQ / REQ:IQ">Disconnect this box</button>
+      <span class="iq-fine">Removes the stored show key and stops the REQ:IQ listener. Your playlists/schedule stay; clear those from <b>Manage Playlists</b>.</span>
+    </form>
+    <?php endif; ?>
 
     <!-- right: last pull status panel -->
     <div class="iq-panel">
@@ -644,3 +803,28 @@ if (!is_array($pullStatus)) $pullStatus = null;
      (&ldquo;Sync with FPP&rdquo;).</p>
  </div>
 </div>
+<script>
+// Live key-validity badge: reflect the CURRENT text field, not the saved key.
+// Empty → nothing; matches the last cloud-verified key → "valid"; otherwise
+// "unverified" until a Pull/Check confirms it. Fixes the badge being stuck on
+// the cached value regardless of what's typed.
+(function () {
+  var input = document.getElementById('setiq-key');
+  var badge = document.getElementById('setiq-keystate');
+  if (!input || !badge) return;
+  var verified = badge.getAttribute('data-verified') || '';
+  function render() {
+    var v = (input.value || '').trim();
+    if (v === '') {
+      badge.innerHTML = '';
+    } else if (v === verified) {
+      badge.innerHTML = '<span class="iq-valid"><span class="iq-dot"></span>valid</span>';
+    } else {
+      badge.innerHTML = '<span class="iq-unverified" style="display:inline-flex;align-items:center;gap:5px;color:#b8860b;font-size:12px;font-weight:600">' +
+        '<span style="width:7px;height:7px;border-radius:50%;background:#e0a800;display:inline-block"></span>unverified — Pull to check</span>';
+    }
+  }
+  input.addEventListener('input', render);
+  render();
+})();
+</script>
