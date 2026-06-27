@@ -9,9 +9,23 @@
  * here can touch a hand-made playlist. Deleting also removes the
  * schedule entries that reference the deleted playlists (and reloads
  * the scheduler), so no dangling rows are left behind.
+ *
+ * It ALSO clears SET:IQ's triggers — the scheduled "Command" rows that
+ * adjust volume, fire presets, etc. Those carry an empty playlist, so the
+ * prefix rule above can't see them; left alone they pile up on every pull
+ * and can't be deleted from the box ("they keep coming back"). SET:IQ now
+ * schedules each trigger through a named "<Show> - …" Command Preset (via
+ * "Run Command Preset"), so we can recognize, list and delete them here —
+ * the preset and every scheduler row that fires it — plus surface any
+ * legacy/raw command rows so the operator can clear those too.
  */
 
 $FPP = 'http://127.0.0.1';
+
+if (!defined('SETIQ_RUN_PRESET_CMD')) define('SETIQ_RUN_PRESET_CMD', 'Run Command Preset');
+// Marker SET:IQ stamps on the presets it creates (pull.php), so we can tell
+// our trigger presets from the operator's own hand-built ones.
+if (!defined('SETIQ_PRESET_DESC')) define('SETIQ_PRESET_DESC', 'SET:IQ trigger');
 
 function setiq_mg_get($url) {
     $ch = curl_init($url);
@@ -24,6 +38,22 @@ function setiq_mg_get($url) {
     $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
     return [$code, $body === false ? null : json_decode($body, true)];
+}
+
+/** POST a JSON body to an FPP endpoint; returns the HTTP code. */
+function setiq_mg_post_json($url, $payload) {
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => json_encode($payload),
+        CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 15,
+    ]);
+    curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return $code;
 }
 
 function setiq_mg_delete_playlist($name) {
@@ -77,6 +107,85 @@ function setiq_mg_scan($FPP) {
     return [$rows, null];
 }
 
+/** Read the box's Command Presets as a flat array (tolerant of either the
+ *  { commandPresets: [...] } wrapper or a bare array). */
+function setiq_mg_read_presets($FPP) {
+    list($code, $cfg) = setiq_mg_get("$FPP/api/configfile/commandPresets.json");
+    if ($code !== 200 || !is_array($cfg)) return [];
+    if (isset($cfg['commandPresets']) && is_array($cfg['commandPresets'])) return $cfg['commandPresets'];
+    return $cfg;
+}
+
+/** The names of the presets SET:IQ created (by our description marker). */
+function setiq_mg_setiq_preset_names($presets) {
+    $names = [];
+    foreach ($presets as $p) {
+        if (!is_array($p)) continue;
+        $name = (string) ($p['name'] ?? '');
+        $desc = (string) ($p['description'] ?? '');
+        if ($name !== '' && $desc === SETIQ_PRESET_DESC) $names[$name] = true;
+    }
+    return $names;
+}
+
+/** Is a schedule row a "Command" row (empty playlist + a command)? */
+function setiq_mg_is_command_row($e) {
+    if (!is_array($e)) return false;
+    $pl = (string) ($e['playlist'] ?? '');
+    $cmd = (string) ($e['command'] ?? '');
+    return $pl === '' && $cmd !== '';
+}
+
+/** Stable signature for a command row, so we can match (and delete every
+ *  duplicate of) the exact trigger the operator picked. */
+function setiq_mg_cmd_sig($e) {
+    $cmd  = (string) ($e['command'] ?? '');
+    $args = (isset($e['args']) && is_array($e['args'])) ? array_map('strval', $e['args']) : [];
+    return implode('|', [
+        $cmd, implode(',', $args),
+        (string) ($e['day'] ?? ''), (string) ($e['startTime'] ?? ''),
+        (string) ($e['startDate'] ?? ''), (string) ($e['endDate'] ?? ''),
+    ]);
+}
+
+/**
+ * Every "Command" row in the schedule, with a SET:IQ flag. A row is SET:IQ's
+ * when it fires one of our presets ("Run Command Preset" → a SET:IQ preset
+ * name). Legacy/raw rows (older pulls wrote the command inline) are still
+ * listed so the operator can clear the leftovers — just not pre-checked.
+ */
+function setiq_mg_scan_commands($FPP, $setiqPresetNames) {
+    list($sc, $sched) = setiq_mg_get("$FPP/api/schedule");
+    if ($sc !== 200 || !is_array($sched)) return [];
+    $rows = [];
+    $seen = [];
+    foreach ($sched as $e) {
+        if (!setiq_mg_is_command_row($e)) continue;
+        $sig = setiq_mg_cmd_sig($e);
+        $cmd  = (string) ($e['command'] ?? '');
+        $args = (isset($e['args']) && is_array($e['args'])) ? array_map('strval', $e['args']) : [];
+        $isSetiq = ($cmd === SETIQ_RUN_PRESET_CMD)
+                && isset($args[0]) && isset($setiqPresetNames[$args[0]]);
+        // The display label: the fired preset for our rows, else the raw command.
+        $label = $isSetiq ? $args[0] : trim($cmd . ' ' . implode(' ', $args));
+        if (isset($seen[$sig])) { $rows[$seen[$sig]]['count']++; continue; }
+        $seen[$sig] = count($rows);
+        $rows[] = [
+            'sig'     => $sig,
+            'label'   => $label,
+            'when'    => (string) ($e['startTime'] ?? ''),
+            'dates'   => trim((string) ($e['startDate'] ?? '') . ' → ' . (string) ($e['endDate'] ?? ''), ' →'),
+            'setiq'   => $isSetiq,
+            'count'   => 1,
+        ];
+    }
+    usort($rows, function ($a, $b) {
+        if ($a['setiq'] !== $b['setiq']) return $a['setiq'] ? -1 : 1;
+        return strcasecmp($a['label'], $b['label']);
+    });
+    return $rows;
+}
+
 function setiq_mg_fmt_dur($sec) {
     if ($sec <= 0) return '—';
     $m = intdiv($sec, 60);
@@ -86,32 +195,27 @@ function setiq_mg_fmt_dur($sec) {
         : sprintf('%d:%02d', $m, $s);
 }
 
-/** Drop schedule entries that reference the deleted playlists. */
-function setiq_mg_clean_schedule($FPP, $deletedNames) {
+/**
+ * Rewrite the schedule, dropping (a) rows that reference a deleted playlist
+ * and (b) command rows whose signature the operator selected. One read +
+ * one write + one reload. Returns how many rows were removed.
+ */
+function setiq_mg_clean_schedule($FPP, $deletedNames, $cmdSigs = []) {
     list($code, $sched) = setiq_mg_get("$FPP/api/schedule");
     if ($code !== 200 || !is_array($sched)) return 0;
     $gone = array_flip($deletedNames);
+    $sigs = array_flip($cmdSigs);
     $kept = [];
     $removed = 0;
     foreach ($sched as $e) {
         $pl = is_array($e) ? ($e['playlist'] ?? '') : '';
         if ($pl !== '' && isset($gone[$pl])) { $removed++; continue; }
+        if (setiq_mg_is_command_row($e) && isset($sigs[setiq_mg_cmd_sig($e)])) { $removed++; continue; }
         $kept[] = $e;
     }
     if ($removed === 0) return 0;
 
-    $ch = curl_init("$FPP/api/schedule");
-    curl_setopt_array($ch, [
-        CURLOPT_POST           => true,
-        CURLOPT_POSTFIELDS     => json_encode($kept),
-        CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 15,
-    ]);
-    curl_exec($ch);
-    $rc = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-    if ($rc !== 200) return 0;
+    if (setiq_mg_post_json("$FPP/api/schedule", $kept) !== 200) return 0;
 
     // Non-fatal if fppd is stopped — the saved schedule loads next start.
     $ch = curl_init("$FPP/api/schedule/reload");
@@ -127,6 +231,45 @@ function setiq_mg_clean_schedule($FPP, $deletedNames) {
     return $removed;
 }
 
+/**
+ * Prune SET:IQ presets that no surviving schedule row still fires. Run AFTER
+ * the schedule rewrite, so clearing a trigger's rows also removes its preset —
+ * "kill it permanently". Operator presets are never touched. Returns the count
+ * removed.
+ */
+function setiq_mg_prune_presets($FPP) {
+    $presets = setiq_mg_read_presets($FPP);
+    if (!$presets) return 0;
+    $setiqNames = setiq_mg_setiq_preset_names($presets);
+    if (!$setiqNames) return 0;
+
+    // Which SET:IQ presets are still referenced by a Run Command Preset row.
+    $referenced = [];
+    list($sc, $sched) = setiq_mg_get("$FPP/api/schedule");
+    if ($sc === 200 && is_array($sched)) {
+        foreach ($sched as $e) {
+            if (!is_array($e) || ($e['command'] ?? '') !== SETIQ_RUN_PRESET_CMD) continue;
+            $args = (isset($e['args']) && is_array($e['args'])) ? $e['args'] : [];
+            if (isset($args[0])) $referenced[(string) $args[0]] = true;
+        }
+    }
+
+    $kept = [];
+    $removed = 0;
+    foreach ($presets as $p) {
+        $name = is_array($p) ? (string) ($p['name'] ?? '') : '';
+        if ($name !== '' && isset($setiqNames[$name]) && !isset($referenced[$name])) {
+            $removed++;
+            continue;
+        }
+        $kept[] = $p;
+    }
+    if ($removed === 0) return 0;
+
+    setiq_mg_post_json("$FPP/api/configfile/commandPresets.json", ['commandPresets' => array_values($kept)]);
+    return $removed;
+}
+
 // ── Handle delete ─────────────────────────────────────────────────────
 
 $results = [];
@@ -136,7 +279,9 @@ $error = '';
 if (($_POST['action'] ?? '') === 'delete') {
     $requested = isset($_POST['names']) && is_array($_POST['names'])
                ? array_filter($_POST['names'], 'is_string') : [];
-    if (!$requested) {
+    $reqSigs   = isset($_POST['cmdsigs']) && is_array($_POST['cmdsigs'])
+               ? array_values(array_filter($_POST['cmdsigs'], 'is_string')) : [];
+    if (!$requested && !$reqSigs) {
         $error = 'Nothing selected.';
     } else {
         // Server-side re-verify against a fresh scan, so the form can
@@ -160,26 +305,39 @@ if (($_POST['action'] ?? '') === 'delete') {
                     $results[] = [$name, "FAILED (HTTP $rc)"];
                 }
             }
-            $schedRemoved = $deleted ? setiq_mg_clean_schedule($FPP, $deleted) : 0;
-            $notice = count($deleted) . ' playlist(s) deleted'
-                    . ($schedRemoved ? ", $schedRemoved schedule entr" . ($schedRemoved === 1 ? 'y' : 'ies') . ' removed' : '')
-                    . '.';
+            // One schedule rewrite handles both the deleted playlists' rows
+            // and the selected command/trigger rows (every duplicate of each).
+            $schedRemoved = ($deleted || $reqSigs)
+                          ? setiq_mg_clean_schedule($FPP, $deleted, $reqSigs) : 0;
+            // Drop any SET:IQ preset left with no row firing it.
+            $presetsRemoved = setiq_mg_prune_presets($FPP);
+
+            $parts = [];
+            if ($deleted)         $parts[] = count($deleted) . ' playlist(s) deleted';
+            if ($schedRemoved)    $parts[] = "$schedRemoved schedule entr" . ($schedRemoved === 1 ? 'y' : 'ies') . ' removed';
+            if ($presetsRemoved)  $parts[] = "$presetsRemoved trigger preset" . ($presetsRemoved === 1 ? '' : 's') . ' cleared';
+            $notice = ($parts ? implode(', ', $parts) : 'Nothing to remove') . '.';
         }
     }
 }
 
-// Fresh list for the table (post-delete it reflects what's left).
+// Fresh lists for the tables (post-delete they reflect what's left).
 list($rows, $scanErr) = setiq_mg_scan($FPP);
 if ($rows === null && $error === '') $error = $scanErr;
+$presets   = setiq_mg_read_presets($FPP);
+$cmdRows   = setiq_mg_scan_commands($FPP, setiq_mg_setiq_preset_names($presets));
+$setiqCmds = array_values(array_filter($cmdRows, function ($r) { return $r['setiq']; }));
+$otherCmds = array_values(array_filter($cmdRows, function ($r) { return !$r['setiq']; }));
 ?>
 <div class="container-fluid">
  <div class="iq-pane">
   <h2 class="iq-h2">SET<span class="iq-c-set">:</span>IQ — Manage Playlists</h2>
   <p class="iq-lede">Every playlist SET:IQ created on this box (detected by its
      &ldquo;Generated by SET:IQ&rdquo; description — hand-made playlists never
-     appear here). All rows are pre-selected; uncheck keepers and delete the
-     rest. Matching schedule entries are cleaned up too, and re-pulling recreates
-     everything.</p>
+     appear here), plus the <b>triggers</b> it scheduled (volume, presets, etc.).
+     All SET:IQ rows are pre-selected; uncheck keepers and delete the rest.
+     Matching schedule entries and trigger presets are cleaned up too, and
+     re-pulling recreates everything.</p>
 
   <?php if ($error): ?>
     <div class="setiq-alert setiq-alert-err" style="margin-top:14px"><?= htmlspecialchars($error) ?></div>
@@ -202,27 +360,37 @@ if ($rows === null && $error === '') $error = $scanErr;
     </div>
   <?php endif; ?>
 
-  <?php if ($rows !== null && !$rows): ?>
-    <p class="iq-fine" style="margin-top:18px"><i>No SET:IQ-generated playlists on this box.</i></p>
-  <?php elseif ($rows):
-    $totalDur   = array_sum(array_column($rows, 'duration'));
-    $totalSched = array_sum(array_column($rows, 'scheduled'));
+  <?php
+    $hasPlaylists = $rows !== null && $rows;
+    $hasTriggers  = $setiqCmds || $otherCmds;
   ?>
+
+  <?php if (!$hasPlaylists && !$hasTriggers): ?>
+    <p class="iq-fine" style="margin-top:18px"><i>No SET:IQ-generated playlists or triggers on this box.</i></p>
+  <?php else: ?>
+
+    <?php
+      $totalDur   = $hasPlaylists ? array_sum(array_column($rows, 'duration')) : 0;
+      $totalSched = $hasPlaylists ? array_sum(array_column($rows, 'scheduled')) : 0;
+    ?>
     <div class="iq-chips">
-      <div class="iq-chip"><span class="iq-chip-num"><?= count($rows) ?></span><span class="iq-chip-lbl">generated playlists</span></div>
+      <div class="iq-chip"><span class="iq-chip-num"><?= $hasPlaylists ? count($rows) : 0 ?></span><span class="iq-chip-lbl">generated playlists</span></div>
       <div class="iq-chip"><span class="iq-chip-num"><?= htmlspecialchars(setiq_mg_fmt_dur($totalDur)) ?></span><span class="iq-chip-lbl">total runtime</span></div>
-      <div class="iq-chip"><span class="iq-chip-num"><?= (int) $totalSched ?></span><span class="iq-chip-lbl">schedule entries</span></div>
+      <div class="iq-chip"><span class="iq-chip-num"><?= count($setiqCmds) ?></span><span class="iq-chip-lbl">SET:IQ triggers</span></div>
     </div>
 
     <form method="post" id="setiq-manage-form"
-          onsubmit="return confirm('Delete ' + document.querySelectorAll('#setiq-manage-form input[name=\'names[]\']:checked').length + ' playlist(s)? Matching schedule entries are removed too. Re-pulling from SET:IQ recreates them.');">
+          onsubmit="return confirm('Delete the selected playlists and triggers? Matching schedule entries and trigger presets are removed too. Re-pulling from SET:IQ recreates them.');">
       <input type="hidden" name="action" value="delete">
+
+      <?php if ($hasPlaylists): ?>
+      <h3 class="iq-h3" style="margin-top:18px">Playlists</h3>
       <div class="iq-tablewrap">
         <table class="table table-striped">
           <thead>
             <tr>
               <th style="width:40px" class="iq-num">
-                <input type="checkbox" id="setiq-check-all" checked
+                <input type="checkbox" class="setiq-check-all" data-group="names" checked
                        title="Select all / none"
                        onclick="document.querySelectorAll('#setiq-manage-form input[name=\'names[]\']').forEach(c => c.checked = this.checked)">
               </th>
@@ -245,13 +413,56 @@ if ($rows === null && $error === '') $error = $scanErr;
           </tbody>
         </table>
       </div>
-      <div class="iq-actionrow">
-        <button type="submit" class="buttons btn btn-danger">Delete selected playlists</button>
+      <?php endif; ?>
+
+      <?php if ($hasTriggers): ?>
+      <h3 class="iq-h3" style="margin-top:22px">Triggers &amp; scheduled commands</h3>
+      <p class="iq-fine" style="margin-bottom:8px">Scheduled <b>Command</b> rows. SET:IQ's
+         own triggers fire a <code>SET:IQ</code> preset and are pre-selected;
+         any other command rows below are shown so you can clear leftovers from
+         older pulls, but are left unchecked — only check what you recognize as
+         SET:IQ's. Deleting a trigger removes every duplicate of it.</p>
+      <div class="iq-tablewrap">
+        <table class="table table-striped">
+          <thead>
+            <tr>
+              <th style="width:40px" class="iq-num">
+                <input type="checkbox" class="setiq-check-all" data-group="cmdsigs"
+                       title="Select all / none of the trigger rows"
+                       onclick="document.querySelectorAll('#setiq-manage-form input[name=\'cmdsigs[]\']').forEach(c => c.checked = this.checked)">
+              </th>
+              <th>Command / preset</th>
+              <th>Time</th>
+              <th>Dates</th>
+              <th class="iq-num">Rows</th>
+              <th>Origin</th>
+            </tr>
+          </thead>
+          <tbody>
+          <?php foreach (array_merge($setiqCmds, $otherCmds) as $c): ?>
+            <tr>
+              <td class="iq-num"><input type="checkbox" name="cmdsigs[]" value="<?= htmlspecialchars($c['sig']) ?>" <?= $c['setiq'] ? 'checked' : '' ?>></td>
+              <td class="iq-name"><?= htmlspecialchars($c['label'] !== '' ? $c['label'] : '(command)') ?></td>
+              <td><?= htmlspecialchars($c['when'] !== '' ? $c['when'] : '—') ?></td>
+              <td><?= htmlspecialchars($c['dates'] !== '' ? $c['dates'] : '—') ?></td>
+              <td class="iq-num"><?= (int) $c['count'] ?></td>
+              <td><?= $c['setiq']
+                    ? '<span class="iq-badge iq-badge-ok">SET:IQ</span>'
+                    : '<span class="iq-badge iq-badge-upd">other</span>' ?></td>
+            </tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+      <?php endif; ?>
+
+      <div class="iq-actionrow" style="margin-top:14px">
+        <button type="submit" class="buttons btn btn-danger">Delete selected</button>
         <span class="iq-fine">Deleting the <code>REQIQ Requests</code> playlist is
           safe — the listener rebuilds it.</span>
       </div>
     </form>
-    <p class="iq-fine" style="margin-top:14px">All rows are selected by default —
+    <p class="iq-fine" style="margin-top:14px">SET:IQ rows are selected by default —
        uncheck anything you want to keep. The REQ:IQ listener rebuilds its
        <code>REQIQ Requests</code> playlist automatically while enabled.</p>
   <?php endif; ?>
