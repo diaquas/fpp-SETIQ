@@ -8,6 +8,7 @@ cd "$(dirname "$0")/.." || exit 0
 chmod +x scripts/*.sh 2>/dev/null
 
 FLAG=/home/fpp/media/config/fpp-SETIQ.reqiq
+KEY=/home/fpp/media/config/fpp-SETIQ.key
 LOG=/home/fpp/media/logs/fpp-SETIQ-reqiq.log
 WATCHDOG="$(pwd)/scripts/watchdog.sh"
 
@@ -19,6 +20,15 @@ WATCHDOG="$(pwd)/scripts/watchdog.sh"
   echo "* * * * * $WATCHDOG >/dev/null 2>&1" ) | crontab - 2>/dev/null \
   && echo "REQ:IQ watchdog cron installed." \
   || echo "Could not install the watchdog cron (no crontab?) — listener still starts on boot."
+
+# Auto-enable REQ:IQ on install when a show key is already saved, so the
+# listener (now playing + viewer requests) comes up right after install — no
+# separate enable step. Only when REQ:IQ was never configured (no flag yet);
+# a deliberate disable (enabled=0) or a Disconnect is respected.
+if [ -s "$KEY" ] && [ ! -f "$FLAG" ]; then
+    printf 'enabled=1\n' > "$FLAG"
+    echo "REQ:IQ auto-enabled (show key present)."
+fi
 
 if [ -f "$FLAG" ] && grep -q '^enabled=1' "$FLAG"; then
     if ! pgrep -f reqiq_listener.php > /dev/null 2>&1; then
