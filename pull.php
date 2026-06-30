@@ -531,6 +531,31 @@ if (isset($_POST['key'])) {
     }
 }
 
+// First time a show key is saved, bring REQ:IQ up automatically so the listener
+// (now playing + viewer requests) runs without a separate enable step — the box
+// "just works" once it has a key. Only when REQ:IQ was never configured (no flag
+// yet): a deliberate disable (enabled=0) or a Disconnect is respected, and
+// Disconnect posts no key field so it never reaches here.
+if (isset($_POST['key']) && $key !== '') {
+    $reqiqFlag = "$cfgDir/$pluginName.reqiq";
+    if (!file_exists($reqiqFlag)) {
+        @file_put_contents($reqiqFlag, "enabled=1\n");
+        $reqiqPidFile = "/tmp/$pluginName-reqiq.pid";
+        $running = false;
+        if (file_exists($reqiqPidFile)) {
+            $rp = (int) trim((string) @file_get_contents($reqiqPidFile));
+            $running = ($rp > 0 && file_exists("/proc/$rp"));
+        }
+        if (!$running) {
+            $reqiqDir = "/home/fpp/media/plugins/$pluginName";
+            $reqiqLog = "/home/fpp/media/logs/$pluginName-reqiq.log";
+            @exec('setsid nohup /usr/bin/php '
+                . escapeshellarg("$reqiqDir/reqiq_listener.php")
+                . ' < /dev/null >> ' . escapeshellarg($reqiqLog) . ' 2>&1 &');
+        }
+    }
+}
+
 // Per-playlist Pull buttons submit their playlist name as "pullone".
 $pullOneName = isset($_POST['pullone']) && is_string($_POST['pullone'])
              ? trim($_POST['pullone']) : '';
