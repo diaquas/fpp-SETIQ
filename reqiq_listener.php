@@ -25,6 +25,7 @@ $keyFile    = "$cfgDir/$pluginName.key";
 $flagFile   = "$cfgDir/$pluginName.reqiq";              // enabled=1
 $statusFile = "$cfgDir/$pluginName.reqiq-status.json";
 $pidFile    = "/tmp/$pluginName-reqiq.pid";
+$lockFile   = "/tmp/$pluginName-reqiq.lock";
 
 $CLOUD              = 'https://lightsofelmridge.com';
 $FPP                = 'http://127.0.0.1';
@@ -344,14 +345,24 @@ function rq_build_upcoming($FPP, $playlistName, $currentSeq) {
     return $out;
 }
 
-// ── Singleton guard ───────────────────────────────────────────────────
-
-if (file_exists($pidFile)) {
-    $old = (int) trim(file_get_contents($pidFile));
-    if ($old > 0 && file_exists("/proc/$old")) {
-        rq_log("Listener already running (pid $old) — exiting");
-        exit(0);
-    }
+// ── Singleton guard (atomic) ──────────────────────────────────────────
+//
+// An exclusive, non-blocking file lock held for the whole run. The old
+// check-then-write on the pid file had a race window: two starts firing close
+// together (enable, install, watchdog cron, key-save, page self-heal — several
+// of which can land at once during setup) could BOTH pass the "is it running?"
+// check and then both run. Duplicate listeners are corrosive — they each
+// report their own seconds_played (so the viewer's now-playing clock jumps),
+// both act on the same request directive (double-inserted songs, stray jumps)
+// and both drain+execute the one-shot transport command. flock is atomic at
+// the OS level, so a second instance can never slip through, however many
+// start paths race. The lock file is intentionally never unlinked (the lock is
+// by open fd, not by path); only the pid file — which the plugin UI reads — is
+// cleaned up on exit.
+$lockFp = fopen($lockFile, 'c');
+if ($lockFp === false || !flock($lockFp, LOCK_EX | LOCK_NB)) {
+    rq_log('Listener already running (lock held) — exiting');
+    exit(0);
 }
 file_put_contents($pidFile, getmypid());
 register_shutdown_function(function () use ($pidFile) { @unlink($pidFile); });
