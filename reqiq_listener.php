@@ -345,6 +345,59 @@ function rq_build_upcoming($FPP, $playlistName, $currentSeq) {
     return $out;
 }
 
+/**
+ * The box's live SCHEDULE signal, from FPP's own scheduler
+ * (GET /api/system/status → "scheduler"). Reported every heartbeat so the
+ * cloud can (a) count down to the NEXT scheduled playlist using FPP's real
+ * start time — honoring gaps between shows an operator has set up — and
+ * (b) know whether the running playlist LOOPS, so "Up Next" only wraps the
+ * revolving door when the box actually will.
+ *
+ * Purely additive and defensive: returns null when the status has no
+ * scheduler block (older FPP, scheduler disabled) so the cloud simply falls
+ * back to its prior behavior — nothing regresses.
+ *
+ *   next_playlist     — name of the next scheduled playlist
+ *   next_start_unix   — its start, unix epoch seconds (drives the countdown)
+ *   current_stop_type — running playlist's stop type: 0 Graceful, 1 Hard,
+ *                       2 Graceful Loop
+ *   current_loops     — true only for Graceful Loop (2): the playlist wraps
+ *   current_end_unix  — when the running playlist is scheduled to end
+ */
+function rq_build_schedule($fpp) {
+    $sched = $fpp['scheduler'] ?? null;
+    if (!is_array($sched)) return null;
+
+    $out = [];
+
+    // Next scheduled playlist — reported even when idle. FPP fills this with
+    // "No playlist scheduled." + a 0 start time when nothing is queued.
+    $next = $sched['nextPlaylist'] ?? null;
+    if (is_array($next)) {
+        $name = trim((string) ($next['playlistName'] ?? ''));
+        $unix = (int) ($next['scheduledStartTime'] ?? 0);
+        if ($unix > 0 && $name !== '' && stripos($name, 'no playlist') === false) {
+            $out['next_playlist']   = $name;
+            $out['next_start_unix'] = $unix;
+        }
+    }
+
+    // Running playlist's stop behavior — only present while a scheduled
+    // playlist is on air. Graceful Loop (2) is the only one that wraps.
+    $cur = $sched['currentPlaylist'] ?? null;
+    if (is_array($cur)) {
+        if (isset($cur['stopType'])) {
+            $st = (int) $cur['stopType'];
+            $out['current_stop_type'] = $st;
+            $out['current_loops']     = ($st === 2);
+        }
+        $end = (int) ($cur['scheduledEndTime'] ?? 0);
+        if ($end > 0) $out['current_end_unix'] = $end;
+    }
+
+    return $out !== [] ? $out : null;
+}
+
 // ── Singleton guard (atomic) ──────────────────────────────────────────
 //
 // An exclusive, non-blocking file lock held for the whole run. The old
@@ -436,12 +489,21 @@ while (true) {
         $lastSeqSync = time();
     }
 
+    // Live scheduler signal (next-show start + loop flag). Folded into the
+    // beat signature so a schedule change — a show ending, the next one
+    // rolling up, a stop-type edit — pushes promptly rather than waiting out
+    // the keepalive.
+    $schedule    = rq_build_schedule($fpp);
+    $nextStartId = $schedule['next_start_unix'] ?? '';
+    $loopsId     = isset($schedule['current_loops']) ? ($schedule['current_loops'] ? '1' : '0') : '';
+
     // Only beat when what the viewer sees changes, or the keepalive is due.
     // The keepalive also bounds how fast a queued transport directive is
     // picked up, so it stays short. Volume is in the signature so an FPP-side
     // volume change pushes on the next tick rather than waiting for keepalive.
     $sig = ($isPlaying ? 'play' : 'stop') . '|' . $currentSeq . '|' . $playingName
-         . '|' . ($volume === null ? '' : $volume);
+         . '|' . ($volume === null ? '' : $volume)
+         . '|' . $nextStartId . '|' . $loopsId;
     if ($sig === $lastSig && (time() - $lastBeat) < $INTERVAL) {
         sleep($POLL);
         continue;
@@ -463,6 +525,7 @@ while (true) {
             'seconds_remaining' => $fpp['seconds_remaining'] ?? 0,
             'playlist'          => $playingName,
             'upcoming'          => $upcoming,
+            'schedule'          => $schedule,
             'volume'            => $volume,
             'plugin_version'    => $PLUGIN_VERSION,
         ],
