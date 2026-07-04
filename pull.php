@@ -422,11 +422,33 @@ function setiq_push_import($base, $key) {
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT        => 30,
     ]);
-    curl_exec($ch);
+    $resp = curl_exec($ch);
     $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
     if ($code === 404) return [false, 'SET:IQ didn\'t recognize the key'];
     if ($code !== 200) return [false, "SET:IQ rejected the import (HTTP $code)"];
+    // SET:IQ echoes what it actually STORED ({playlists, schedule, items}).
+    // Report that receipt rather than what we think we sent — a push whose
+    // playlists all land with zero songs is the classic silent failure, and
+    // this is the one place it can be caught at the moment of pushing.
+    $receipt = is_string($resp) ? json_decode($resp, true) : null;
+    if (is_array($receipt) && isset($receipt['playlists'])) {
+        $pl    = (int) $receipt['playlists'];
+        $rows  = (int) ($receipt['schedule'] ?? 0);
+        $songs = array_key_exists('items', $receipt) ? (int) $receipt['items'] : null;
+        $msg = "$pl playlist(s)"
+             . ($songs === null ? '' : " with $songs song" . ($songs === 1 ? '' : 's'))
+             . " and $rows schedule entr" . ($rows === 1 ? 'y' : 'ies')
+             . ' stored by SET:IQ';
+        if ($songs === 0 && $pl > 0) {
+            return [false, "$msg — the playlists arrived EMPTY, so nothing can"
+                . ' be placed on the SET:IQ calendar. Check that this box\'s'
+                . ' playlists have entries (FPP → Content Setup → Playlists),'
+                . ' then push again'];
+        }
+        return [true, $msg];
+    }
+    // Older SET:IQ deployments answer 200 without a receipt body.
     return [true, count($playlists) . ' playlist(s) and ' . count($schedule)
         . ' schedule entr' . (count($schedule) === 1 ? 'y' : 'ies')
         . ' sent to SET:IQ'];
