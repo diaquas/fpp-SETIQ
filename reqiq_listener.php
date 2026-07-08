@@ -479,6 +479,14 @@ while (true) {
     $playingName     = is_array($currentPlaylist) ? ($currentPlaylist['playlist'] ?? '') : '';
     $currentSeq      = $fpp['current_sequence'] ?? '';
     $isPlaying       = strtolower($fpp['status_name'] ?? '') === 'playing';
+    // Fractional playback position for REQ audio sync (FPP writes
+    // milliseconds_elapsed into the same status JSON — absent on very old
+    // FPP versions and in remote mode, so null-safe). Captured with a
+    // local monotonic-ish stamp so the beat can report how stale the
+    // sample is by send time; the Pi's absolute clock is never trusted —
+    // the cloud restamps with its own clock on receipt.
+    $posMs        = isset($fpp['milliseconds_elapsed']) ? (int) $fpp['milliseconds_elapsed'] : null;
+    $posSampledAt = microtime(true);
     // FPP master volume (0–100). Reported back to the cloud so the REQ:IQ
     // console slider mirrors volume changes made on the box itself.
     $volume          = isset($fpp['volume']) ? (int) $fpp['volume'] : null;
@@ -523,6 +531,11 @@ while (true) {
             'current_song'      => $fpp['current_song'] ?? '',
             'seconds_played'    => $fpp['seconds_played'] ?? 0,
             'seconds_remaining' => $fpp['seconds_remaining'] ?? 0,
+            // REQ audio sync anchor: fractional position + how stale the
+            // sample is by send time (Pi-clock delta, valid even though
+            // the Pi's absolute clock is untrusted).
+            'milliseconds_elapsed' => $posMs,
+            'position_age_ms'      => (int) round((microtime(true) - $posSampledAt) * 1000),
             'playlist'          => $playingName,
             'upcoming'          => $upcoming,
             'schedule'          => $schedule,
