@@ -304,6 +304,91 @@ function rq_sync_sequences($CLOUD, $FPP, $key) {
 }
 
 /**
+ * REQ audio — upload the box's local MP3s to the cloud audio bucket, so
+ * viewer phones stream EXACTLY the bytes the show plays. Two-step
+ * protocol: report {name,bytes,sha256} for every local music file →
+ * the cloud (consent-gated) answers with presigned PUT URLs for only the
+ * new/changed songs it can match to the catalog → PUT each → confirm so
+ * the cloud records the rows. Hashes are cached by name|size|mtime so
+ * the hourly re-sync costs near nothing when the folder is unchanged.
+ * Returns a short human summary for the log/status file.
+ */
+function rq_sync_audio($CLOUD, $key, $mediaDir) {
+    $musicDir = "$mediaDir/music";
+    if (!is_dir($musicDir)) return 'no music dir';
+
+    static $hashCache = [];
+    $files  = [];
+    foreach ((scandir($musicDir) ?: []) as $f) {
+        if (!preg_match('/\.mp3$/i', $f)) continue;
+        $path = "$musicDir/$f";
+        if (!is_file($path)) continue;
+        $size  = filesize($path);
+        $mtime = filemtime($path);
+        $ck    = "$f|$size|$mtime";
+        if (!isset($hashCache[$ck])) {
+            $hashCache[$ck] = hash_file('sha256', $path);
+        }
+        $files[] = ['name' => $f, 'bytes' => $size, 'sha256' => $hashCache[$ck]];
+    }
+    if ($files === []) return 'no mp3s in music dir';
+
+    list($code, $resp) = rq_post_json("$CLOUD/api/reqiq/audio/fpp-sync", [
+        'key'   => $key,
+        'files' => $files,
+    ]);
+    if ($code !== 200 || !is_array($resp)) return "sync failed (HTTP $code)";
+    if (empty($resp['audioEnabled'])) return 'audio not enabled for this show';
+    $uploads = isset($resp['uploads']) && is_array($resp['uploads']) ? $resp['uploads'] : [];
+    if ($uploads === []) return 'all songs up to date';
+
+    $byName = [];
+    foreach ($files as $f) $byName[$f['name']] = $f;
+
+    $done   = [];
+    $failed = 0;
+    foreach ($uploads as $u) {
+        $name   = is_array($u) ? (string) ($u['name'] ?? '') : '';
+        $url    = is_array($u) ? (string) ($u['url'] ?? '') : '';
+        $songId = is_array($u) ? (string) ($u['songId'] ?? '') : '';
+        if ($name === '' || $url === '' || $songId === '' || !isset($byName[$name])) continue;
+        $path = "$musicDir/$name";
+        $fh   = @fopen($path, 'rb');
+        if (!$fh) { $failed++; continue; }
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_PUT            => true,
+            CURLOPT_INFILE         => $fh,
+            CURLOPT_INFILESIZE     => $byName[$name]['bytes'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 300,
+        ]);
+        curl_exec($ch);
+        $http = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        fclose($fh);
+        if ($http >= 200 && $http < 300) {
+            $done[] = [
+                'songId' => $songId,
+                'name'   => $name,
+                'bytes'  => $byName[$name]['bytes'],
+                'sha256' => $byName[$name]['sha256'],
+            ];
+        } else {
+            $failed++;
+        }
+    }
+
+    if ($done !== []) {
+        rq_post_json("$CLOUD/api/reqiq/audio/fpp-confirm", [
+            'key'  => $key,
+            'done' => $done,
+        ]);
+    }
+    return count($done) . ' uploaded' . ($failed > 0 ? ", $failed failed" : '');
+}
+
+/**
  * Tonight's rotation after the current sequence, for the viewer page's
  * "Up Next" feed. Reads the ACTIVE show playlist (not the requests
  * playlist) and rotates it to start after the current item. Cached per
@@ -427,6 +512,7 @@ rq_log('REQ:IQ listener started (pid ' . getmypid() . ')');
 $playlistName     = null;   // cloud tells us; cached after first heartbeat
 $lastPlaylistPull = 0;
 $lastSeqSync      = 0;
+$lastAudioSync    = 0;   // REQ audio: MP3 upload sync (hourly + on cloud request)
 $lastInsertedId   = '';     // re-insert guard if /mark fails
 $lastBeat         = 0;      // when we last POSTed a heartbeat
 $lastSig          = null;   // last reported now-playing signature
@@ -554,6 +640,16 @@ while (true) {
     if (!empty($resp['playlistName'])) $playlistName = $resp['playlistName'];
     if (!empty($resp['intervalSeconds'])) $INTERVAL = max(2, (int) $resp['intervalSeconds']);
     if (!empty($resp['warning'])) rq_log('Cloud: ' . $resp['warning']);
+
+    // REQ audio: push local MP3s to the cloud when the operator asked
+    // (Studio "Pull from FPP" → audioSync) or hourly while audio is
+    // enabled — so viewer phones stream the exact files this box plays.
+    if (!empty($resp['audioSync'])
+        || (!empty($resp['audioEnabled']) && time() - $lastAudioSync > $SEQ_SYNC_INTERVAL)) {
+        $audioResult = rq_sync_audio($CLOUD, $key, $mediaDir);
+        rq_log("Audio sync: $audioResult");
+        $lastAudioSync = time();
+    }
 
     // Keep the requests playlist fresh.
     if ($playlistName && time() - $lastPlaylistPull > $PLAYLIST_REFRESH) {
