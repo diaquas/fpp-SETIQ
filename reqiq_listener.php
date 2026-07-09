@@ -25,7 +25,12 @@ $keyFile    = "$cfgDir/$pluginName.key";
 $flagFile   = "$cfgDir/$pluginName.reqiq";              // enabled=1
 $statusFile = "$cfgDir/$pluginName.reqiq-status.json";
 $pidFile    = "/tmp/$pluginName-reqiq.pid";
-$lockFile   = "/tmp/$pluginName-reqiq.lock";
+// Lock lives in our own (fpp-owned) config dir, NOT /tmp: /tmp is sticky,
+// so a lock file left root-owned by an earlier run can't be opened OR
+// deleted by the fpp-user listener — permanently wedging startup ("already
+// running — exiting") even though nothing is actually running. cfgDir owns
+// consistently (same place as the key/flag/status files).
+$lockFile   = "$cfgDir/$pluginName-reqiq.lock";
 
 $CLOUD              = 'https://lightsofelmridge.com';
 $FPP                = 'http://127.0.0.1';
@@ -589,6 +594,15 @@ function rq_build_schedule($fpp) {
 // by open fd, not by path); only the pid file — which the plugin UI reads — is
 // cleaned up on exit.
 $lockFp = fopen($lockFile, 'c');
+if ($lockFp === false) {
+    // Couldn't even open the lock file (bad perms / unwritable dir). That's
+    // an environment error, NOT another instance — don't masquerade as
+    // "already running". Fall back to a private temp path so a wedged lock
+    // can never block startup, and log the real reason.
+    rq_log("Warning: cannot open lock $lockFile — falling back");
+    $lockFile = sys_get_temp_dir() . "/$pluginName-reqiq-" . getmyuid() . '.lock';
+    $lockFp = fopen($lockFile, 'c');
+}
 if ($lockFp === false || !flock($lockFp, LOCK_EX | LOCK_NB)) {
     rq_log('Listener already running (lock held) — exiting');
     exit(0);
