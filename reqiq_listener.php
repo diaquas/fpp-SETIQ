@@ -389,6 +389,97 @@ function rq_sync_audio($CLOUD, $key, $mediaDir) {
 }
 
 /**
+ * REQ:IQ renders — upload the box's local .fseq files to the cloud
+ * show-assets bucket, so the REQ:IQ Preview visualizer, catalog insights
+ * and TRK:IQ read the exact renders this box plays. Same two-step
+ * protocol as the audio sync: report {name,bytes,sha256} for every local
+ * sequence → the cloud answers with signed upload URLs for only the
+ * new/changed renders it can match to the catalog (diffed against
+ * show_songs.fseq_sha256) → PUT each → confirm so the cloud records the
+ * rows. Only ever runs on an explicit operator request (fseqSync flag),
+ * never on a timer — renders are large. Hashes are cached by
+ * name|size|mtime so a repeat pull of an unchanged folder is cheap.
+ * Returns a short human summary for the log/status file.
+ */
+function rq_sync_fseq($CLOUD, $key, $mediaDir) {
+    $seqDir = "$mediaDir/sequences";
+    if (!is_dir($seqDir)) return 'no sequences dir';
+
+    static $hashCache = [];
+    $files = [];
+    foreach ((scandir($seqDir) ?: []) as $f) {
+        if (!preg_match('/\.fseq$/i', $f)) continue;
+        $path = "$seqDir/$f";
+        if (!is_file($path)) continue;
+        $size  = filesize($path);
+        $mtime = filemtime($path);
+        $ck    = "$f|$size|$mtime";
+        if (!isset($hashCache[$ck])) {
+            $hashCache[$ck] = hash_file('sha256', $path);
+        }
+        $files[] = ['name' => $f, 'bytes' => $size, 'sha256' => $hashCache[$ck]];
+    }
+    if ($files === []) return 'no .fseq in sequences dir';
+
+    list($code, $resp) = rq_post_json("$CLOUD/api/reqiq/fpp/fseq-sync", [
+        'key'   => $key,
+        'files' => $files,
+    ]);
+    if ($code !== 200 || !is_array($resp)) return "sync failed (HTTP $code)";
+    $uploads = isset($resp['uploads']) && is_array($resp['uploads']) ? $resp['uploads'] : [];
+    if ($uploads === []) return 'all renders up to date';
+
+    $byName = [];
+    foreach ($files as $f) $byName[$f['name']] = $f;
+
+    $done   = [];
+    $failed = 0;
+    foreach ($uploads as $u) {
+        $name   = is_array($u) ? (string) ($u['name'] ?? '') : '';
+        $url    = is_array($u) ? (string) ($u['url'] ?? '') : '';
+        $songId = is_array($u) ? (string) ($u['songId'] ?? '') : '';
+        if ($name === '' || $url === '' || $songId === '' || !isset($byName[$name])) continue;
+        $path = "$seqDir/$name";
+        $fh   = @fopen($path, 'rb');
+        if (!$fh) { $failed++; continue; }
+        // Supabase signed upload URL: a plain PUT of the bytes. The token
+        // in the URL carries auth + upsert, so no extra header is needed
+        // beyond the content type.
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_PUT            => true,
+            CURLOPT_INFILE         => $fh,
+            CURLOPT_INFILESIZE     => $byName[$name]['bytes'],
+            CURLOPT_HTTPHEADER     => ['Content-Type: application/octet-stream'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 600,
+        ]);
+        curl_exec($ch);
+        $http = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        fclose($fh);
+        if ($http >= 200 && $http < 300) {
+            $done[] = [
+                'songId' => $songId,
+                'name'   => $name,
+                'bytes'  => $byName[$name]['bytes'],
+                'sha256' => $byName[$name]['sha256'],
+            ];
+        } else {
+            $failed++;
+        }
+    }
+
+    if ($done !== []) {
+        rq_post_json("$CLOUD/api/reqiq/fpp/fseq-confirm", [
+            'key'  => $key,
+            'done' => $done,
+        ]);
+    }
+    return count($done) . ' uploaded' . ($failed > 0 ? ", $failed failed" : '');
+}
+
+/**
  * Tonight's rotation after the current sequence, for the viewer page's
  * "Up Next" feed. Reads the ACTIVE show playlist (not the requests
  * playlist) and rotates it to start after the current item. Cached per
@@ -649,6 +740,14 @@ while (true) {
         $audioResult = rq_sync_audio($CLOUD, $key, $mediaDir);
         rq_log("Audio sync: $audioResult");
         $lastAudioSync = time();
+    }
+
+    // REQ:IQ renders: push local .fseq files to the cloud when the
+    // operator asked (Studio "Pull renders from FPP" → fseqSync). Only on
+    // explicit request — renders are large, so there's no hourly timer.
+    if (!empty($resp['fseqSync'])) {
+        $fseqResult = rq_sync_fseq($CLOUD, $key, $mediaDir);
+        rq_log("Render sync: $fseqResult");
     }
 
     // Keep the requests playlist fresh.
