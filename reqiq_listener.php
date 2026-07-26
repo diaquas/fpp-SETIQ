@@ -143,9 +143,11 @@ function rq_refresh_requests_playlist($CLOUD, $FPP, $key) {
  *                           cloud sends tonight's playlist + item 1 = opener)
  *
  * `$currentPlaylist` is the name of the playlist FPP is running now — needed
- * by "jump" to resolve the target item by name within it.
+ * by "jump" to resolve the target item by name within it. `$currentSeq` is the
+ * sequence on air right now — "jump" uses it to avoid restarting the current
+ * item when the cloud's Up Next is a heartbeat behind the box (see below).
  */
-function rq_exec_command($FPP, $command, $currentPlaylist = '') {
+function rq_exec_command($FPP, $command, $currentPlaylist = '', $currentSeq = '') {
     $type = is_array($command) ? ($command['type'] ?? '') : '';
     if ($type === '') return;
 
@@ -178,7 +180,23 @@ function rq_exec_command($FPP, $command, $currentPlaylist = '') {
             rq_log("Jump target \"$arg\" not found in \"$currentPlaylist\" — ignored");
             return;
         }
-        $parts = ['Start Playlist At Item', $currentPlaylist, $idx];
+        // Stale-console guard. The cloud's "Up Next" is a heartbeat behind the
+        // box: right after a song rolls over on its own, Up Next's first row is
+        // the song that JUST started. A jump to it would "Start Playlist At
+        // Item" the item already on air — restarting it, which the operator
+        // sees as Next replaying the current song. Only the box knows what's
+        // truly playing now, so resolve the on-air item's index here and, when
+        // the target IS the current item, advance to the real next item instead
+        // of restarting it.
+        $curIdx = $currentSeq !== ''
+            ? rq_find_index($FPP, $currentPlaylist, $currentSeq)
+            : null;
+        if ($curIdx !== null && $curIdx === $idx) {
+            rq_log("Jump target \"$arg\" is the song already playing (item $idx) — advancing to next instead of restarting");
+            $parts = ['Next Playlist Item'];
+        } else {
+            $parts = ['Start Playlist At Item', $currentPlaylist, $idx];
+        }
     } elseif ($type === 'start') {
         // Start a specific playlist (need not be running) at an item — the
         // operator's "Start show now". The cloud sends tonight's SET:IQ
@@ -810,7 +828,7 @@ while (true) {
     // 4. Execute a live transport directive (next/pause/volume/jump/…), if any.
     $command = $resp['command'] ?? null;
     if (is_array($command) && !empty($command['type'])) {
-        rq_exec_command($FPP, $command, $playingName);
+        rq_exec_command($FPP, $command, $playingName, $currentSeq);
     }
 
     rq_write_status($statusFile, [
