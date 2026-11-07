@@ -560,10 +560,18 @@ function rq_build_upcoming($FPP, $playlistName, $currentSeq) {
  *   next_start_unix   — its start, unix epoch seconds (drives the countdown)
  *   current_stop_type — running playlist's stop type: 0 Graceful, 1 Hard,
  *                       2 Graceful Loop
- *   current_loops     — true only for Graceful Loop (2): the playlist wraps
+ *   current_loops     — LEGACY: true only for Graceful Loop (2). Kept for
+ *                       older clouds; it is NOT "does the playlist repeat"
+ *                       (stop type is how a playlist ends at its end time).
+ *   current_repeats   — the running playlist's schedule row "Repeat" flag:
+ *                       whether it loops through the evening. Read from the
+ *                       schedule because FPP's status doesn't carry it.
+ *                       Omitted for manual (unscheduled) plays and when the
+ *                       row can't be identified, so the cloud keeps its
+ *                       default.
  *   current_end_unix  — when the running playlist is scheduled to end
  */
-function rq_build_schedule($fpp) {
+function rq_build_schedule($fpp, $FPP = 'http://127.0.0.1') {
     $sched = $fpp['scheduler'] ?? null;
     if (!is_array($sched)) return null;
 
@@ -592,9 +600,61 @@ function rq_build_schedule($fpp) {
         }
         $end = (int) ($cur['scheduledEndTime'] ?? 0);
         if ($end > 0) $out['current_end_unix'] = $end;
+
+        // Only a scheduled play has a schedule row to read the flag from;
+        // FPP sets scheduledStartTime only then (Player::WasScheduled()).
+        $name  = trim((string) ($cur['playlistName'] ?? ''));
+        $start = (int) ($cur['scheduledStartTime'] ?? 0);
+        if ($name !== '' && $start > 0) {
+            $rep = rq_schedule_repeat($FPP, $name, $start);
+            if ($rep !== null) $out['current_repeats'] = $rep;
+        }
     }
 
     return $out !== [] ? $out : null;
+}
+
+/**
+ * The "Repeat" flag of the schedule row that started `$playlist`, or null
+ * when it can't be told. FPP's live status (scheduler.currentPlaylist) has no
+ * repeat field, so this reads the schedule itself (GET /api/schedule) —
+ * cached for a minute, since it only changes when a schedule is pulled or
+ * edited. When several enabled rows run the same playlist and disagree, the
+ * row whose start time matches the play's scheduled start (local clock)
+ * decides; otherwise the answer is unknown (null), never a guess.
+ */
+function rq_schedule_repeat($FPP, $playlist, $scheduledStartUnix) {
+    static $cache = null;
+    static $cachedAt = 0;
+    if ($cache === null || time() - $cachedAt > 60) {
+        list($code, $data) = rq_get_json("$FPP/api/schedule");
+        $cache    = ($code === 200 && is_array($data)) ? $data : [];
+        $cachedAt = time();
+    }
+
+    $rows = [];
+    foreach ($cache as $e) {
+        if (!is_array($e)) continue;
+        if (empty($e['enabled'])) continue;
+        if ((string) ($e['playlist'] ?? '') !== $playlist) continue;
+        $rows[] = $e;
+    }
+    if ($rows === []) return null;
+
+    // FPP stores repeat as 0/1 (older files can use larger values for a
+    // repeat interval); anything non-zero means the playlist repeats.
+    $repeats = function ($e) { return ((int) ($e['repeat'] ?? 0)) !== 0; };
+
+    $values = array_unique(array_map(function ($e) use ($repeats) {
+        return $repeats($e) ? 1 : 0;
+    }, $rows));
+    if (count($values) === 1) return reset($values) === 1;
+
+    $startClock = date('H:i:s', $scheduledStartUnix);
+    foreach ($rows as $e) {
+        if ((string) ($e['startTime'] ?? '') === $startClock) return $repeats($e);
+    }
+    return null;
 }
 
 // ── Singleton guard (atomic) ──────────────────────────────────────────
@@ -710,9 +770,10 @@ while (true) {
     // beat signature so a schedule change — a show ending, the next one
     // rolling up, a stop-type edit — pushes promptly rather than waiting out
     // the keepalive.
-    $schedule    = rq_build_schedule($fpp);
+    $schedule    = rq_build_schedule($fpp, $FPP);
     $nextStartId = $schedule['next_start_unix'] ?? '';
     $loopsId     = isset($schedule['current_loops']) ? ($schedule['current_loops'] ? '1' : '0') : '';
+    $loopsId    .= isset($schedule['current_repeats']) ? ($schedule['current_repeats'] ? 'r1' : 'r0') : '';
 
     // Only beat when what the viewer sees changes, or the keepalive is due.
     // The keepalive also bounds how fast a queued transport directive is
