@@ -302,11 +302,15 @@ function rq_sync_sequences($CLOUD, $FPP, $key) {
     static $id3Cache  = [];
     $durations = [];
     $id3       = [];
+    // sequence → rendered audio (fseq meta `mf` basename) — the exact names
+    // the cloud stores per catalog song and pushes with. Null = no audio.
+    $media     = [];
     foreach ($names as $name) {
         if (!array_key_exists($name, $infoCache)) {
             $infoCache[$name] = rq_sequence_info($FPP, $name);
         }
         $info = $infoCache[$name];
+        $media[$name] = $info['media'];
         if ($info['duration'] !== null) $durations[$name] = $info['duration'];
         if ($info['media'] !== null) {
             if (!array_key_exists($info['media'], $id3Cache)) {
@@ -318,11 +322,27 @@ function rq_sync_sequences($CLOUD, $FPP, $key) {
         }
     }
 
+    // The music / videos folders, for SET:IQ's file picker.
+    $list = function ($dir) use ($FPP) {
+        list($c, $d) = rq_get_json("$FPP/api/files/$dir");
+        if ($c !== 200 || !is_array($d)) return [];
+        $fs = isset($d['files']) && is_array($d['files']) ? $d['files'] : $d;
+        $out = [];
+        foreach ($fs as $f) {
+            $n = is_array($f) ? ($f['name'] ?? '') : (is_string($f) ? $f : '');
+            if (is_string($n) && $n !== '') $out[] = $n;
+        }
+        return $out;
+    };
+
     rq_post_json("$CLOUD/api/setiq/fpp/sync", [
         'key'       => $key,
         'sequences' => $names,
         'durations' => (object) $durations,
         'id3'       => (object) $id3,
+        'media'     => (object) $media,
+        'music'     => $list('music'),
+        'videos'    => $list('videos'),
     ]);
 }
 
