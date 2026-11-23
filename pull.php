@@ -80,6 +80,22 @@ function setiq_local_sequences() {
     return $names;
 }
 
+/** Plain file names in one FPP media folder (music, videos) — the
+ *  inventory SET:IQ's file picker offers. [] when unavailable. */
+function setiq_local_files($dir) {
+    list($code, $body) = setiq_get_json('http://127.0.0.1/api/files/' . rawurlencode($dir));
+    if ($code !== 200) return [];
+    $data = json_decode($body, true);
+    if (!is_array($data)) return [];
+    $files = isset($data['files']) && is_array($data['files']) ? $data['files'] : $data;
+    $names = [];
+    foreach ($files as $f) {
+        $name = is_array($f) ? ($f['name'] ?? '') : (is_string($f) ? $f : '');
+        if (is_string($name) && $name !== '') $names[] = $name;
+    }
+    return $names;
+}
+
 /** The commands this box can run (FPP /api/commands) — name + argument
  *  schema, including any plugin commands (Remote Falcon, etc.). Returns a
  *  trimmed [{name, args}] list, or [] when unavailable. */
@@ -156,8 +172,14 @@ function setiq_sync_sequences($base, $key) {
     if ($names === null) return [false, 'could not read the local sequence list', 0];
     $durations = [];
     $id3       = [];
+    // sequence → the audio it was rendered with (fseq meta `mf` basename).
+    // The cloud stores these as each catalog song's exact FPP names — the
+    // ONLY names a push uses — so a sequence without audio still reports
+    // (as null) rather than letting anyone guess "<name>.mp3".
+    $media     = [];
     foreach ($names as $name) {
         $info = setiq_sequence_info($name);
+        $media[$name] = $info['media'];
         if ($info['duration'] !== null) $durations[$name] = $info['duration'];
         if ($info['media'] !== null) {
             $tags = setiq_media_id3($info['media']);
@@ -181,6 +203,9 @@ function setiq_sync_sequences($base, $key) {
         'durations' => (object) $durations,
         'id3'       => (object) $id3,
         'commands'  => $commands,
+        'media'     => (object) $media,
+        'music'     => setiq_local_files('music'),
+        'videos'    => setiq_local_files('videos'),
     ]);
     $ch = curl_init("$base/api/setiq/fpp/sync");
     curl_setopt_array($ch, [
@@ -190,12 +215,25 @@ function setiq_sync_sequences($base, $key) {
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT        => 30,
     ]);
-    curl_exec($ch);
+    $resp = curl_exec($ch);
     $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
-    return $code === 200
-        ? [true, count($names) . ' sequence(s) reported to SET:IQ', count($names)]
-        : [false, "SET:IQ rejected the sync (HTTP $code)", count($names)];
+    if ($code !== 200) {
+        return [false, "SET:IQ rejected the sync (HTTP $code)", count($names)];
+    }
+    $msg = count($names) . ' sequence(s) reported to SET:IQ';
+    // The cloud's link report: how many catalog songs now carry this box's
+    // exact file names, and which ones won't be pushed.
+    $r = json_decode((string) $resp, true);
+    $l = is_array($r) && isset($r['links']) && is_array($r['links']) ? $r['links'] : null;
+    if ($l) {
+        $msg .= sprintf(
+            ' — %d matched, %d unmatched, %d ambiguous, %d missing',
+            (int) ($l['matched'] ?? 0), (int) ($l['unmatched'] ?? 0),
+            (int) ($l['ambiguous'] ?? 0), (int) ($l['missing'] ?? 0)
+        );
+    }
+    return [true, $msg, count($names)];
 }
 
 /**
@@ -516,11 +554,14 @@ function setiq_push_import($base, $key) {
 function setiq_fetch_cloud($base, $key) {
     // Self-report the hostname so SET:IQ's dialog can show
     // "last pulled by <host>".
+    // links=1 asks for the strict push: every entry uses the exact file
+    // names this box reported in the sync that runs just before this pull,
+    // and songs with no matched file are left out (listed in `skipped`).
     // presets=1 opts this box into named Command Presets for triggers — the
     // cloud then emits "Run Command Preset" schedule rows we can identify and
     // delete, instead of anonymous raw command rows.
     list($code, $body) = setiq_get_json(
-        "$base/api/setiq/fpp/playlists?key=" . rawurlencode($key) . "&presets=1",
+        "$base/api/setiq/fpp/playlists?key=" . rawurlencode($key) . "&presets=1&links=1",
         ['X-FPP-Host: ' . php_uname('n')]
     );
     $data = json_decode($body, true);
@@ -574,6 +615,7 @@ $showName = '';
 $error = '';
 $notice = '';
 $syncMsg = '';
+$skipWarn = '';
 $schedMsg = '';
 $schedErr = '';
 $importMsg = '';
@@ -645,6 +687,11 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
     if ($key === '') {
         $error = 'Enter your SET:IQ show key first.';
     } elseif ($action !== 'sync' && $action !== 'import') {
+        // Report this box's files FIRST: the cloud links each catalog song
+        // to the exact .fseq / audio names reported here, and the
+        // playlists fetched next are built from those names only.
+        list($ok, $msg, $seqCount) = setiq_sync_sequences($SETIQ_BASE, $key);
+        $syncMsg = ($ok ? 'Synced from FPP: ' : 'Sync from FPP skipped: ') . $msg;
         list($error, $data) = setiq_fetch_cloud($SETIQ_BASE, $key);
         if ($data) $showName = $data['show'] ?? '';
         // The cloud accepted this key — remember it as verified so the "valid"
@@ -662,6 +709,24 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
         }
     }
 
+    // Songs the cloud left out of the playlists because they have no exact
+    // file match on this box — named by display name so they can be fixed
+    // in IQ Studio (the catalog's FPP file picker), never guessed here.
+    if ($data && !empty($data['skipped']) && is_array($data['skipped'])) {
+        $titles = [];
+        foreach ($data['skipped'] as $sk) {
+            $t = is_array($sk) ? ($sk['title'] ?? '') : '';
+            $st = is_array($sk) ? ($sk['status'] ?? '') : '';
+            if (is_string($t) && $t !== '') $titles[] = $st ? "$t ($st)" : $t;
+        }
+        if ($titles) {
+            $skipWarn = count($titles) . ' song' . (count($titles) === 1 ? '' : 's')
+                . ' left out of the playlists — no exact file match on this box: '
+                . implode(', ', $titles)
+                . '. Pick the right file for each in IQ Studio → Catalog → song → FPP file.';
+        }
+    }
+
     if ($action === 'pull' && $data) {
         foreach ($data['playlists'] as $p) {
             $name = $p['name'] ?? '';
@@ -670,9 +735,6 @@ if (in_array($action, ['pull', 'check', 'pullone', 'sync', 'import'], true)) {
             $rc = setiq_post_playlist($name, $json);
             $results[] = [$name, $rc === 200 ? 'imported' : "FAILED (HTTP $rc)"];
         }
-        // Report what's on the box so SET:IQ can reconcile its calendar.
-        list($ok, $msg, $seqCount) = setiq_sync_sequences($SETIQ_BASE, $key);
-        $syncMsg = ($ok ? 'Sequence list synced: ' : 'Sequence sync skipped: ') . $msg;
         // Push the season schedule into FPP's scheduler so the full
         // show run exists, not just the playlists.
         if (!empty($_POST['schedule']) && isset($data['schedule']) && is_array($data['schedule'])) {
@@ -756,6 +818,10 @@ $verifiedKey = file_exists($verifiedKeyFile)
 
   <?php if ($notice): ?>
     <div class="setiq-alert setiq-alert-ok" style="margin-top:14px"><?= htmlspecialchars($notice) ?></div>
+  <?php endif; ?>
+
+  <?php if ($skipWarn): ?>
+    <div class="setiq-alert setiq-alert-err" style="margin-top:14px"><?= htmlspecialchars($skipWarn) ?></div>
   <?php endif; ?>
 
   <?php if ($syncMsg): ?>
